@@ -1,7 +1,7 @@
 package web
 
-import "net/http"
+import "github.com/gin-gonic/gin"
 
-func (h *Handlers) AuditPage(w http.ResponseWriter, r *http.Request) {
-	h.Templates.ExecuteTemplate(w, "audit", allowed)
+func (h *Handlers) AuditPage(g *gin.Context) {
+	h.Templates.ExecuteTemplate(g.Writer, "audit", allowed)
 }
