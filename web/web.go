@@ -4,15 +4,17 @@ import (
 	"html/template"
 	"log"
 	"os"
-)
-
-var (
-	allowed []*authed
+	"sync"
+	"time"
 )
 
 type Handlers struct {
 	Templates    *template.Template
-	UnlockPasswd string
+	unlockPasswd string
+
+	auditLock sync.Mutex // Not concerned for performance
+	granted   []*authed
+	activity  sync.Map
 }
 
 type authed struct {
@@ -20,6 +22,10 @@ type authed struct {
 	Authed          string
 	LastAccess      string
 	DomainsAccessed []string
+
+	Requests map[time.Time]int
+
+	recordEditLock sync.Mutex
 }
 
 func SetupHandlers() Handlers {
@@ -31,5 +37,5 @@ func SetupHandlers() Handlers {
 
 	unlockPasswd := os.Getenv("GATEWAY_PASSWORD")
 
-	return Handlers{Templates: templates, UnlockPasswd: unlockPasswd}
+	return Handlers{Templates: templates, unlockPasswd: unlockPasswd}
 }

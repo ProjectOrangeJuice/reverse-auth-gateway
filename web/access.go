@@ -3,7 +3,6 @@ package web
 import (
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,16 +11,14 @@ import (
 func (h *Handlers) AccessPage(g *gin.Context) {
 	connectorIP := g.ClientIP()
 
-	if strings.Contains(connectorIP, "192.168.2.") {
-		log.Printf("Allowing %s as local to access %s", connectorIP, g.Request.Host)
-		g.Status(http.StatusOK)
-		return
-	}
+	h.auditLock.Lock()
+	copiedGranted := make([]*authed, len(h.granted))
+	copy(copiedGranted, h.granted)
+	h.auditLock.Unlock()
 
-	for _, i := range allowed {
-		if i.IP == connectorIP {
-			i.LastAccess = time.Now().Format(time.UnixDate)
-			addDomain(i, g.Request.Host)
+	for _, authRecord := range copiedGranted {
+		if authRecord.IP == connectorIP {
+			addAccess(authRecord, g.Request.Host)
 			g.Status(http.StatusOK)
 			return
 		}
@@ -30,12 +27,25 @@ func (h *Handlers) AccessPage(g *gin.Context) {
 	g.Status(http.StatusUnauthorized)
 }
 
-func addDomain(a *authed, domain string) {
+func addAccess(a *authed, domain string) {
 	log.Printf("%s accessed %s", a.IP, domain)
+
+	a.recordEditLock.Lock()
+	defer a.recordEditLock.Unlock()
+
+	a.LastAccess = time.Now().Format(time.UnixDate)
+
+	newDomain := true
 	for _, d := range a.DomainsAccessed {
 		if d == domain {
-			return
+			newDomain = false
+			break
 		}
 	}
-	a.DomainsAccessed = append(a.DomainsAccessed, domain)
+	if newDomain {
+		a.DomainsAccessed = append(a.DomainsAccessed, domain)
+	}
+
+	now := time.Now().UTC().Truncate(time.Hour)
+	a.Requests[now]++
 }

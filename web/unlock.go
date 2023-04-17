@@ -11,11 +11,42 @@ import (
 func (h *Handlers) UnlockPage(g *gin.Context) {
 	if g.Request.Method == http.MethodPost {
 		p := g.Params.ByName("pass")
-		if p == h.UnlockPasswd {
-			a := authed{IP: g.ClientIP(), Authed: time.Now().Format(time.UnixDate)}
-			allowed = append(allowed, &a)
+		if p == h.unlockPasswd {
+			a := authed{IP: g.ClientIP(), Authed: time.Now().Format(time.UnixDate), Requests: make(map[time.Time]int)}
+			h.auditLock.Lock()
+			h.granted = append(h.granted, &a)
+			h.auditLock.Unlock()
+			go handleBucket(&a)
 			log.Printf("Adding %v to allowed list", g.ClientIP())
+		} else {
+
+			// Record failed logins
+			h.activity.Store(g.ClientIP(), p)
+			log.Printf("Failed login, %v tried with password %s", g.ClientIP(), p)
 		}
 	}
+
 	h.Templates.ExecuteTemplate(g.Writer, "unlock", nil)
+}
+
+func handleBucket(a *authed) {
+	ticker := time.NewTicker(time.Hour)
+	for range ticker.C {
+		log.Printf("Ticked for record %+v", a)
+		// Get the current time truncated to the nearest hour
+		now := time.Now().UTC().Truncate(time.Hour)
+
+		// Lock the mutex to prevent concurrent access to the accessCount map
+		a.recordEditLock.Lock()
+
+		// Prune the access count for buckets older than 7 days
+		for bucket := range a.Requests {
+			if now.Sub(bucket) > 7*24*time.Hour {
+				delete(a.Requests, bucket)
+			}
+		}
+
+		// Unlock the mutex to allow concurrent access to the accessCount map
+		a.recordEditLock.Unlock()
+	}
 }
