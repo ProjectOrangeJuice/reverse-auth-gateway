@@ -3,6 +3,7 @@ package web
 import (
 	"html/template"
 	"log"
+	"os"
 )
 
 var (
@@ -10,7 +11,8 @@ var (
 )
 
 type Handlers struct {
-	Templates *template.Template
+	Templates    *template.Template
+	UnlockPasswd string
 }
 
 type authed struct {
@@ -22,10 +24,12 @@ type authed struct {
 
 func SetupHandlers() Handlers {
 	templates, err := template.ParseGlob("web/src/*.html")
-
 	if err != nil {
 		log.Fatalf("%s\n", err)
 		return Handlers{}
 	}
-	return Handlers{Templates: templates}
+
+	unlockPasswd := os.Getenv("GATEWAY_PASSWORD")
+
+	return Handlers{Templates: templates, UnlockPasswd: unlockPasswd}
 }
