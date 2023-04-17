@@ -49,10 +49,11 @@
 
 <table id="myTable">
   <tr class="header">
-    <th style="width:25%;">IP</th>
-    <th style="width:25%;">Authed</th>
-    <th style="width:25%;">Last</th>
-    <th style="width:25%;">Domains</th>
+    <th style="width:15%;">IP</th>
+    <th style="width:15%;">Authed</th>
+    <th style="width:15%;">Last</th>
+    <th style="width:15%;">Domains</th>
+    <th style="width:40%;">Access buckets</th>
   </tr>
 
   {{ range . }}
@@ -63,6 +64,25 @@
     <td><ul>{{ range .DomainsAccessed }}
             <li>{{ . }}</li>
         {{ end }}</ul>
+    </td>
+
+    <td>
+      <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Count</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range $time, $count := .Requests}}
+                <tr>
+                    <td>{{$time}}</td>
+                    <td>{{$count}}</td>
+                </tr>
+            {{end}}
+        </tbody>
+    </table>
     </td>
   </tr>
   {{ end }}
