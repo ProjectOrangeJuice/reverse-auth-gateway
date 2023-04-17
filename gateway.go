@@ -23,5 +23,6 @@ func main() {
 	router.GET("/unlock", handlers.UnlockPage)
 	router.GET("/access", handlers.AccessPage)
 	router.GET("/audit", handlers.AuditPage)
+	router.GET("/buckets", handlers.BucketPage)
 	log.Fatal(http.ListenAndServe(":9090", router))
 }

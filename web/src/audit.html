@@ -9,7 +9,7 @@
   box-sizing: border-box;
 }
 
-#myInput {
+#grantedSearch #failedSearch {
   background-image: url('/css/searchicon.png');
   background-position: 10px 10px;
   background-repeat: no-repeat;
@@ -20,95 +20,124 @@
   margin-bottom: 12px;
 }
 
-#myTable {
+table {
   border-collapse: collapse;
   width: 100%;
   border: 1px solid #ddd;
   font-size: 18px;
 }
 
-#myTable th, #myTable td {
+th,  td {
   text-align: left;
   padding: 12px;
 }
 
-#myTable tr {
+ tr {
   border-bottom: 1px solid #ddd;
 }
 
-#myTable tr.header, #myTable tr:hover {
+ tr.header,  tr:hover {
   background-color: #f1f1f1;
 }
 </style>
 </head>
 <body>
 
-<h2>My Customers</h2>
+  <h2>Allowed users</h2>
 
-<input type="text" id="myInput" onkeyup="myFunction()" placeholder="Search for ip.." title="Type in a name">
+  <input type="text" id="grantedSearch" onkeyup="searchGranted()" placeholder="Search for ip..">
+  
+  <table id="granted">
+    <tr class="header">
+      <th style="width:15%;">IP</th>
+      <th style="width:15%;">Authed</th>
+      <th style="width:15%;">Last</th>
+      <th style="width:15%;">Domains</th>
+      <th style="width:40%;">Access buckets</th>
+    </tr>
+  
+    {{ range .Granted }}
+    <tr>
+      <td>{{ .IP }} </td>
+      <td>{{ .Authed }}</td>
+      <td>{{ .LastAccess }}</td>
+      <td><ul>{{ range .DomainsAccessed }}
+              <li>{{ . }}</li>
+          {{ end }}</ul>
+      </td>
+  
+      <td><centre><a href="/buckets?ip={{ .IP }}">View</a></centre></td>
+    </tr>
+    {{ end }}
+  
+  </table>
 
-<table id="myTable">
+
+<h2>Failed logins</h2>
+
+<input type="text" id="failedSearch" onkeyup="searchFailed()" placeholder="Search for ip..">
+
+<table id="failed">
   <tr class="header">
     <th style="width:15%;">IP</th>
-    <th style="width:15%;">Authed</th>
-    <th style="width:15%;">Last</th>
-    <th style="width:15%;">Domains</th>
-    <th style="width:40%;">Access buckets</th>
+    <th style="width:50%;">failed</th>
   </tr>
 
-  {{ range . }}
+  {{ range $ip, $value := .Failed }}
   <tr>
-    <td>{{ .IP }} </td>
-    <td>{{ .Authed }}</td>
-    <td>{{ .LastAccess }}</td>
-    <td><ul>{{ range .DomainsAccessed }}
-            <li>{{ . }}</li>
+    <td>{{ $ip }} </td>
+    <td><ul>{{ range $value }}
+            <li>tried "{{ .Password }}" at {{ .When }}</li>
         {{ end }}</ul>
     </td>
 
-    <td>
-      <table>
-        <thead>
-            <tr>
-                <th>Time</th>
-                <th>Count</th>
-            </tr>
-        </thead>
-        <tbody>
-            {{range $time, $count := .Requests}}
-                <tr>
-                    <td>{{$time}}</td>
-                    <td>{{$count}}</td>
-                </tr>
-            {{end}}
-        </tbody>
-    </table>
-    </td>
+    <td><a href="/buckets?ip={{ .IP }}">View</a></td>
   </tr>
   {{ end }}
 
 </table>
 
 <script>
-function myFunction() {
-  var input, filter, table, tr, td, i, txtValue;
-  input = document.getElementById("myInput");
-  filter = input.value.toUpperCase();
-  table = document.getElementById("myTable");
-  tr = table.getElementsByTagName("tr");
-  for (i = 0; i < tr.length; i++) {
-    td = tr[i].getElementsByTagName("td")[0];
-    if (td) {
-      txtValue = td.textContent || td.innerText;
-      if (txtValue.toUpperCase().indexOf(filter) > -1) {
-        tr[i].style.display = "";
-      } else {
-        tr[i].style.display = "none";
-      }
-    }       
+  function searchGranted() {
+    var input, filter, table, tr, td, i, txtValue;
+    input = document.getElementById("grantedSearch");
+    filter = input.value.toUpperCase();
+    table = document.getElementById("granted");
+    tr = table.getElementsByTagName("tr");
+    for (i = 0; i < tr.length; i++) {
+      td = tr[i].getElementsByTagName("td")[0];
+      if (td) {
+        txtValue = td.textContent || td.innerText;
+        if (txtValue.toUpperCase().indexOf(filter) > -1) {
+          tr[i].style.display = "";
+        } else {
+          tr[i].style.display = "none";
+        }
+      }       
+    }
   }
-}
-</script>
+  </script>
+
+<script>
+  function searchFailed() {
+    var input, filter, table, tr, td, i, txtValue;
+    input = document.getElementById("failed");
+    filter = input.value.toUpperCase();
+    table = document.getElementById("failed");
+    tr = table.getElementsByTagName("tr");
+    for (i = 0; i < tr.length; i++) {
+      td = tr[i].getElementsByTagName("td")[0];
+      if (td) {
+        txtValue = td.textContent || td.innerText;
+        if (txtValue.toUpperCase().indexOf(filter) > -1) {
+          tr[i].style.display = "";
+        } else {
+          tr[i].style.display = "none";
+        }
+      }       
+    }
+  }
+  </script>
 
 </body>
 </html>

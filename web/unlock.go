@@ -10,7 +10,7 @@ import (
 
 func (h *Handlers) UnlockPage(g *gin.Context) {
 	if g.Request.Method == http.MethodPost {
-		p := g.Params.ByName("pass")
+		p := g.Request.FormValue("pass")
 		if p == h.unlockPasswd {
 			a := authed{IP: g.ClientIP(), Authed: time.Now().Format(time.UnixDate), Requests: make(map[time.Time]int)}
 			h.auditLock.Lock()
@@ -21,7 +21,13 @@ func (h *Handlers) UnlockPage(g *gin.Context) {
 		} else {
 
 			// Record failed logins
-			h.activity.Store(g.ClientIP(), p)
+			recordInterface, ok := h.activity.Load(g.ClientIP())
+			var records []failedLogin
+			if ok {
+				records = recordInterface.([]failedLogin)
+			}
+			records = append(records, failedLogin{Password: p, When: time.Now().Format(time.UnixDate)})
+			h.activity.Store(g.ClientIP(), records)
 			log.Printf("Failed login, %v tried with password %s", g.ClientIP(), p)
 		}
 	}

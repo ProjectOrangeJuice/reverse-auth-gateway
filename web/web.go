@@ -28,6 +28,11 @@ type authed struct {
 	recordEditLock sync.Mutex
 }
 
+type failedLogin struct {
+	Password string
+	When     string
+}
+
 func SetupHandlers() Handlers {
 	templates, err := template.ParseGlob("web/src/*.html")
 	if err != nil {
