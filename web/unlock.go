@@ -12,12 +12,7 @@ func (h *Handlers) UnlockPage(g *gin.Context) {
 	if g.Request.Method == http.MethodPost {
 		p := g.Request.FormValue("pass")
 		if p == h.unlockPasswd {
-			a := authed{IP: g.ClientIP(), Authed: time.Now().Format(time.UnixDate), Requests: make(map[time.Time]int)}
-			h.auditLock.Lock()
-			h.granted = append(h.granted, &a)
-			h.auditLock.Unlock()
-			go handleBucket(&a)
-			log.Printf("Adding %v to allowed list", g.ClientIP())
+			h.addGranted(g.ClientIP())
 		} else {
 
 			// Record failed logins
@@ -33,6 +28,16 @@ func (h *Handlers) UnlockPage(g *gin.Context) {
 	}
 
 	h.Templates.ExecuteTemplate(g.Writer, "unlock", nil)
+}
+
+func (h *Handlers) addGranted(ip string) *authed {
+	a := authed{IP: ip, Authed: time.Now().Format(time.UnixDate), Requests: make(map[time.Time]int)}
+	h.auditLock.Lock()
+	h.granted = append(h.granted, &a)
+	h.auditLock.Unlock()
+	go handleBucket(&a)
+	log.Printf("Adding %v to allowed list", ip)
+	return &a
 }
 
 func handleBucket(a *authed) {
