@@ -4,31 +4,37 @@
 
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link
-      rel="stylesheet"
-      href="https://unpkg.com/papercss@1.9.2/dist/paper.min.css"
-    />
+  <link rel="stylesheet" href="css/style.css" />
 </head>
 
 <body>
 
-  <div class="paper container">
 
-    <form method="POST">
-      <div class="form-group">
-        <h1>Unlock gateway</h1>
-        <hr>
+  <main id="main" tabIndex="-1">
+    <div class="container">
+      <article id="about">
+        <section class="container">
+          <h1>Unlock gateway</h1>
+          <p>! Only authorized access allowed !</p>
+          <form method="POST">
+            <div class="form-group">
+              <h1>Unlock gateway</h1>
 
-        <div class="nes-field">
-          <label for="psw"><b>Password</b></label>
-          <input type="password" name="pass" class="input-block" required>
-        </div>
-        <button type="submit" class="btn-secondary">Unlock</button>
-      </div>
+              <div class="nes-field">
+                <label for="psw"><b>Password</b></label>
+                <input type="password" name="pass" class="link-guidelines" required>
+              </div>
+              <button type="submit" class="btn-secondary">Unlock</button>
+            </div>
 
-    </form>
+          </form>
 
-  </div>
+        </section>
+      </article>
+    </div>
+  </main>
+
+
 
 </body>
 

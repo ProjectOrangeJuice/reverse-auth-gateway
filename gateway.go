@@ -24,5 +24,6 @@ func main() {
 	router.GET("/access", handlers.AccessPage)
 	router.GET("/audit", handlers.AuditPage)
 	router.GET("/buckets", handlers.BucketPage)
+	router.Static("/css", "web/src/css")
 	log.Fatal(http.ListenAndServe(":9090", router))
 }
