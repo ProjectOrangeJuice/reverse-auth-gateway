@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/didip/tollbooth"
-	"github.com/didip/tollbooth/limiter"
+	"github.com/didip/tollbooth/v7"
+	"github.com/didip/tollbooth/v7/limiter"
 	"github.com/didip/tollbooth_gin"
 	"github.com/gin-gonic/gin"
 )
@@ -25,5 +25,12 @@ func main() {
 	router.GET("/audit", handlers.AuditPage)
 	router.GET("/buckets", handlers.BucketPage)
 	router.Static("/css", "web/src/css")
-	log.Fatal(http.ListenAndServe(":9090", router))
+
+	server := &http.Server{
+		Addr:              ":9090",
+		ReadHeaderTimeout: 3 * time.Second,
+		Handler:           router,
+	}
+
+	log.Fatal(server.ListenAndServe())
 }
