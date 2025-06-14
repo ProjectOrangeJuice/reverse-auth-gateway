@@ -4,6 +4,8 @@ import (
 	"gateway/web"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/didip/tollbooth/v7"
@@ -15,6 +17,12 @@ import (
 func main() {
 	handlers := web.SetupHandlers()
 	router := gin.Default()
+
+	trustedProxies := getTrustedProxies()
+	if len(trustedProxies) > 0 {
+		router.SetTrustedProxies(trustedProxies)
+	}
+
 	// Create a new limiter that allows 5 requests per second with a burst limit of 5.
 	lim := tollbooth.NewLimiter(5, &limiter.ExpirableOptions{DefaultExpirationTTL: time.Hour})
 	lim.SetBurst(5)
@@ -33,4 +41,12 @@ func main() {
 	}
 
 	log.Fatal(server.ListenAndServe())
+}
+
+func getTrustedProxies() []string {
+	proxies := os.Getenv("TRUSTED_PROXIES")
+	if proxies == "" {
+		return nil
+	}
+	return strings.Split(proxies, ",")
 }
