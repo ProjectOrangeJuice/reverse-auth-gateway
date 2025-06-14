@@ -3,6 +3,7 @@ package web
 import (
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,11 @@ func (h *Handlers) AccessPage(g *gin.Context) {
 }
 
 func (h *Handlers) checkLocalIP(ip string) (bool, *authed) {
+	// Only allow local IP bypass if explicitly enabled via environment variable
+	if os.Getenv("ALLOW_LOCAL_BYPASS") != "true" {
+		return false, nil
+	}
+	
 	ipSplit := strings.Split(ip, ".")
 	if len(ipSplit) != 4 {
 		return false, nil
@@ -49,7 +55,7 @@ func (h *Handlers) checkLocalIP(ip string) (bool, *authed) {
 	}
 
 	if ipSplit[0] == "192" && ipSplit[1] == "168" && localDigit < 30 {
-		log.Printf("This is a local IP (%s), adding it to the allowed list", ip)
+		log.Printf("Local IP bypass enabled: adding %s to allowed list", ip)
 		return true, h.addGranted(ip)
 	}
 	return false, nil
