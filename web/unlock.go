@@ -10,20 +10,31 @@ import (
 
 func (h *Handlers) UnlockPage(g *gin.Context) {
 	if g.Request.Method == http.MethodPost {
-		p := g.Request.FormValue("pass")
-		if p == h.unlockPasswd {
+		rawPassword := g.Request.FormValue("pass")
+		
+		// Validate password input
+		password, valid := validatePassword(rawPassword)
+		if !valid {
+			log.Printf("Invalid password format from %v", g.ClientIP())
+			g.Status(http.StatusBadRequest)
+			return
+		}
+		
+		if password == h.unlockPasswd {
 			h.addGranted(g.ClientIP())
 		} else {
-
-			// Record failed logins
+			// Record failed logins with sanitized password for security
 			recordInterface, ok := h.activity.Load(g.ClientIP())
 			var records []failedLogin
 			if ok {
 				records = recordInterface.([]failedLogin)
 			}
-			records = append(records, failedLogin{Password: p, When: time.Now().Format(time.UnixDate)})
+			
+			// Store sanitized password to prevent log injection
+			sanitizedPass := sanitizeForLog(password)
+			records = append(records, failedLogin{Password: sanitizedPass, When: time.Now().Format(time.UnixDate)})
 			h.activity.Store(g.ClientIP(), records)
-			log.Printf("Failed login, %v tried with password %s", g.ClientIP(), p)
+			log.Printf("Failed login, %v tried with password %s", g.ClientIP(), sanitizedPass)
 		}
 	}
 

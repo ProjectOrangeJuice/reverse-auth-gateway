@@ -4,8 +4,11 @@ import (
 	"html/template"
 	"log"
 	"os"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type Handlers struct {
@@ -43,4 +46,67 @@ func SetupHandlers() Handlers {
 	unlockPasswd := os.Getenv("GATEWAY_PASSWORD")
 
 	return Handlers{Templates: templates, unlockPasswd: unlockPasswd}
+}
+
+// Input validation functions
+func validatePassword(password string) (string, bool) {
+	// Check for null bytes and control characters that could cause issues
+	if strings.Contains(password, "\x00") {
+		return "", false
+	}
+	
+	// Check for valid UTF-8
+	if !utf8.ValidString(password) {
+		return "", false
+	}
+	
+	// Limit password length to prevent memory exhaustion attacks
+	if len(password) > 1000 {
+		return "", false
+	}
+	
+	// Trim whitespace
+	password = strings.TrimSpace(password)
+	
+	// Don't allow empty passwords after trimming
+	if password == "" {
+		return "", false
+	}
+	
+	return password, true
+}
+
+func sanitizeForLog(input string) string {
+	// Remove control characters and null bytes for safe logging
+	re := regexp.MustCompile(`[\x00-\x1f\x7f-\x9f]`)
+	sanitized := re.ReplaceAllString(input, "")
+	
+	// Limit length for logs
+	if len(sanitized) > 50 {
+		sanitized = sanitized[:47] + "..."
+	}
+	
+	return sanitized
+}
+
+func validateQueryParam(param string) (string, bool) {
+	// Check for valid UTF-8
+	if !utf8.ValidString(param) {
+		return "", false
+	}
+	
+	// Check for null bytes
+	if strings.Contains(param, "\x00") {
+		return "", false
+	}
+	
+	// Limit length
+	if len(param) > 100 {
+		return "", false
+	}
+	
+	// Trim whitespace
+	param = strings.TrimSpace(param)
+	
+	return param, true
 }

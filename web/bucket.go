@@ -2,6 +2,7 @@ package web
 
 import (
 	"log"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 )
@@ -12,9 +13,16 @@ func (h *Handlers) BucketPage(g *gin.Context) {
 	copy(copiedGranted, h.granted)
 	h.auditLock.Unlock()
 
-	lookup := g.Query("ip")
+	rawLookup := g.Query("ip")
+	lookup, valid := validateQueryParam(rawLookup)
+	if !valid {
+		log.Printf("Invalid IP parameter in bucket request from %v", g.ClientIP())
+		g.Status(http.StatusBadRequest)
+		return
+	}
+	
 	var record *authed
-	log.Printf("Looking up bucket data for %s", lookup)
+	log.Printf("Looking up bucket data for %s", sanitizeForLog(lookup))
 	for _, a := range copiedGranted {
 		if a.IP == lookup {
 			record = a
