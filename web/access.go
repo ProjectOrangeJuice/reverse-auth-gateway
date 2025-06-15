@@ -13,6 +13,10 @@ import (
 
 func (h *Handlers) AccessPage(g *gin.Context) {
 	connectorIP := g.ClientIP()
+	
+	// Record access page visit metrics
+	h.metrics.AccessPageVisits.Inc()
+	h.recordAccessRequest(g)
 
 	h.auditLock.Lock()
 	copiedGranted := make([]*authed, len(h.granted))
@@ -82,4 +86,24 @@ func addAccess(a *authed, domain string) {
 
 	now := time.Now().UTC().Truncate(time.Hour)
 	a.Requests[now]++
+}
+
+func (h *Handlers) recordAccessRequest(g *gin.Context) {
+	request := AccessRequest{
+		IP:        g.ClientIP(),
+		Timestamp: time.Now(),
+		UserAgent: g.GetHeader("User-Agent"),
+		Host:      g.Request.Host,
+		Method:    g.Request.Method,
+	}
+	
+	h.metrics.AccessRequests.Inc()
+	
+	h.metrics.lock.Lock()
+	h.metrics.AccessDetails = append(h.metrics.AccessDetails, request)
+	// Keep only last 1000 requests to prevent memory issues
+	if len(h.metrics.AccessDetails) > 1000 {
+		h.metrics.AccessDetails = h.metrics.AccessDetails[len(h.metrics.AccessDetails)-1000:]
+	}
+	h.metrics.lock.Unlock()
 }

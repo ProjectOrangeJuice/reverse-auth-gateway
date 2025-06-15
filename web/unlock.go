@@ -21,8 +21,10 @@ func (h *Handlers) UnlockPage(g *gin.Context) {
 		}
 		
 		if password == h.unlockPasswd {
+			h.metrics.CorrectPasswordCount.Inc()
 			h.addGranted(g.ClientIP())
 		} else {
+			h.metrics.WrongPasswordCount.Inc()
 			// Record failed logins with sanitized password for security
 			recordInterface, ok := h.activity.Load(g.ClientIP())
 			var records []failedLogin
