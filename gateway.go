@@ -30,8 +30,6 @@ func main() {
 	router.POST("/unlock", tollbooth_gin.LimitHandler(lim), handlers.UnlockPage)
 	router.GET("/unlock", handlers.UnlockPage)
 	router.GET("/access", handlers.AccessPage)
-	router.GET("/audit", handlers.AuditPage)
-	router.GET("/buckets", handlers.BucketPage)
 	router.Static("/css", "web/src/css")
 
 	server := &http.Server{
