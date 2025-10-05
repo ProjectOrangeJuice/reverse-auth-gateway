@@ -44,12 +44,22 @@ func (h *Handlers) UnlockPage(g *gin.Context) {
 }
 
 func (h *Handlers) addGranted(ip string) *authed {
-	a := authed{IP: ip, Authed: time.Now().Format(time.UnixDate), Requests: make(map[time.Time]int)}
+	now := time.Now()
+	a := authed{
+		IP:         ip,
+		AuthedTime: now,
+		Authed:     now.Format(time.UnixDate),
+		Requests:   make(map[time.Time]int),
+	}
 	h.auditLock.Lock()
 	h.granted = append(h.granted, &a)
 	h.auditLock.Unlock()
 	go handleBucket(&a)
 	log.Printf("Adding %v to allowed list", ip)
+
+	// Persist to file
+	go h.saveGranted()
+
 	return &a
 }
 

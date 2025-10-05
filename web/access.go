@@ -25,6 +25,12 @@ func (h *Handlers) AccessPage(g *gin.Context) {
 
 	for _, authRecord := range copiedGranted {
 		if authRecord.IP == connectorIP {
+			// Check if IP has expired
+			if h.isExpired(authRecord) {
+				log.Printf("IP %s has expired (authed %v)", connectorIP, authRecord.AuthedTime)
+				g.Status(http.StatusUnauthorized)
+				return
+			}
 			addAccess(authRecord, g.Request.Host)
 			g.Status(http.StatusOK)
 			return
