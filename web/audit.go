@@ -1,8 +1,6 @@
 package web
 
 import (
-	"log"
-
 	"github.com/gin-gonic/gin"
 )
 
@@ -19,11 +17,12 @@ func (h *Handlers) AuditPage(g *gin.Context) {
 
 	m := make(map[string][]failedLogin)
 	h.activity.Range(func(key, value interface{}) bool {
-		m[key.(string)] = value.([]failedLogin)
+		if failures, ok := value.([]failedLogin); ok {
+			m[key.(string)] = failures
+		}
 		return true
 	})
-	log.Printf("copied failed login -> %+v", m)
-	view := auditView{Granted: copiedGranted, Failed: m}
 
+	view := auditView{Granted: copiedGranted, Failed: m}
 	h.Templates.ExecuteTemplate(g.Writer, "audit", view)
 }

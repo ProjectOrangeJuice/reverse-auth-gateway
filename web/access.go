@@ -95,11 +95,15 @@ func addAccess(a *authed, domain string) {
 }
 
 func (h *Handlers) recordAccessRequest(g *gin.Context) {
+	host := g.Request.Host
+	if len(host) > 253 {
+		host = host[:253]
+	}
 	request := AccessRequest{
 		IP:        g.ClientIP(),
 		Timestamp: time.Now(),
 		UserAgent: g.GetHeader("User-Agent"),
-		Host:      g.Request.Host,
+		Host:      sanitizeForLog(host),
 		Method:    g.Request.Method,
 	}
 	
