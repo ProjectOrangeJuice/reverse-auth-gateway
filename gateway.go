@@ -47,8 +47,13 @@ func main() {
 	router.GET("/metrics", tollbooth_gin.LimitHandler(metricsLim), handlers.MetricsHandler)
 	router.Static("/css", "web/src/css")
 
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "9090"
+	}
+
 	server := &http.Server{
-		Addr:              ":9090",
+		Addr:              ":" + port,
 		ReadHeaderTimeout: 3 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
