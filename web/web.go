@@ -26,6 +26,12 @@ type Handlers struct {
 	metrics        *Metrics
 	persistFile    string
 	expirationDays int
+
+	notifyEmail string
+	smtpHost    string
+	smtpPort    string
+	smtpUser    string
+	smtpPass    string
 }
 
 type Metrics struct {
@@ -110,12 +116,26 @@ func SetupHandlers() Handlers {
 		}),
 	}
 
+	smtpHost := os.Getenv("SMTP_HOST")
+	smtpPort := os.Getenv("SMTP_PORT")
+	if smtpPort == "" {
+		smtpPort = "587"
+	}
+	smtpUser := os.Getenv("SMTP_USER")
+	smtpPass := os.Getenv("SMTP_PASS")
+	notifyEmail := os.Getenv("NOTIFY_EMAIL")
+
 	h := Handlers{
 		Templates:      templates,
 		unlockPasswd:   unlockPasswd,
 		metrics:        metrics,
 		persistFile:    persistFile,
 		expirationDays: expirationDays,
+		notifyEmail:    notifyEmail,
+		smtpHost:       smtpHost,
+		smtpPort:       smtpPort,
+		smtpUser:       smtpUser,
+		smtpPass:       smtpPass,
 	}
 
 	// Load persisted IPs on startup

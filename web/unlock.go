@@ -59,6 +59,7 @@ func (h *Handlers) addGranted(ip string) *authed {
 
 	// Persist to file
 	go h.saveGranted()
+	go h.sendUnlockNotification(ip)
 
 	return &a
 }
