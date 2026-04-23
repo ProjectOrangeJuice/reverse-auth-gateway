@@ -1,6 +1,9 @@
 package web
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"html/template"
 	"log"
@@ -26,6 +29,8 @@ type Handlers struct {
 	metrics        *Metrics
 	persistFile    string
 	expirationDays int
+	cookieDomain   string
+	cookieName     string
 
 	notifyEmail string
 	smtpHost    string
@@ -40,7 +45,7 @@ type Metrics struct {
 	CorrectPasswordCount prometheus.Counter
 	AccessRequests       prometheus.Counter
 	AccessDetails        []AccessRequest
-	lock                sync.RWMutex
+	lock                 sync.RWMutex
 }
 
 type AccessRequest struct {
@@ -54,6 +59,7 @@ type AccessRequest struct {
 type authed struct {
 	IP              string
 	AuthedTime      time.Time         `json:"authed_time"`
+	Session         string            `json:"session"`
 	Authed          string            `json:"-"` // Keep for backward compatibility, don't persist
 	LastAccess      string            `json:"last_access"`
 	DomainsAccessed []string          `json:"domains_accessed"`
@@ -65,6 +71,7 @@ type authed struct {
 type persistedAuthed struct {
 	IP              string            `json:"ip"`
 	AuthedTime      time.Time         `json:"authed_time"`
+	Session         string            `json:"session"`
 	LastAccess      string            `json:"last_access"`
 	DomainsAccessed []string          `json:"domains_accessed"`
 	Requests        map[time.Time]int `json:"requests"`
@@ -86,6 +93,11 @@ func SetupHandlers() Handlers {
 	persistFile := os.Getenv("PERSIST_FILE")
 	if persistFile == "" {
 		persistFile = "granted_ips.json"
+	}
+	cookieDomain := os.Getenv("COOKIE_DOMAIN")
+	cookieName := os.Getenv("COOKIE_NAME")
+	if cookieName == "" {
+		cookieName = "gateway_session"
 	}
 
 	expirationDays := 30 // default
@@ -131,6 +143,8 @@ func SetupHandlers() Handlers {
 		metrics:        metrics,
 		persistFile:    persistFile,
 		expirationDays: expirationDays,
+		cookieDomain:   cookieDomain,
+		cookieName:     cookieName,
 		notifyEmail:    notifyEmail,
 		smtpHost:       smtpHost,
 		smtpPort:       smtpPort,
@@ -153,25 +167,25 @@ func validatePassword(password string) (string, bool) {
 	if strings.Contains(password, "\x00") {
 		return "", false
 	}
-	
+
 	// Check for valid UTF-8
 	if !utf8.ValidString(password) {
 		return "", false
 	}
-	
+
 	// Limit password length to prevent memory exhaustion attacks
 	if len(password) > 1000 {
 		return "", false
 	}
-	
+
 	// Trim whitespace
 	password = strings.TrimSpace(password)
-	
+
 	// Don't allow empty passwords after trimming
 	if password == "" {
 		return "", false
 	}
-	
+
 	return password, true
 }
 
@@ -179,12 +193,12 @@ func sanitizeForLog(input string) string {
 	// Remove control characters and null bytes for safe logging
 	re := regexp.MustCompile(`[\x00-\x1f\x7f-\x9f]`)
 	sanitized := re.ReplaceAllString(input, "")
-	
+
 	// Limit length for logs
 	if len(sanitized) > 50 {
 		sanitized = sanitized[:47] + "..."
 	}
-	
+
 	return sanitized
 }
 
@@ -244,6 +258,7 @@ func (h *Handlers) loadGranted() {
 		a := &authed{
 			IP:              p.IP,
 			AuthedTime:      p.AuthedTime,
+			Session:         p.Session,
 			Authed:          p.AuthedTime.Format(time.UnixDate),
 			LastAccess:      p.LastAccess,
 			DomainsAccessed: p.DomainsAccessed,
@@ -269,6 +284,7 @@ func (h *Handlers) saveGranted() {
 		persisted = append(persisted, persistedAuthed{
 			IP:              a.IP,
 			AuthedTime:      a.AuthedTime,
+			Session:         a.Session,
 			LastAccess:      a.LastAccess,
 			DomainsAccessed: a.DomainsAccessed,
 			Requests:        a.Requests,
@@ -327,4 +343,39 @@ func (h *Handlers) cleanupExpiredIPs() {
 func (h *Handlers) isExpired(a *authed) bool {
 	expirationDuration := time.Duration(h.expirationDays) * 24 * time.Hour
 	return time.Since(a.AuthedTime) > expirationDuration
+}
+
+func (h *Handlers) cookieMaxAgeSeconds() int {
+	return h.expirationDays * 24 * 60 * 60
+}
+
+func generateSession() (string, error) {
+	sessionBytes := make([]byte, 32)
+	if _, err := rand.Read(sessionBytes); err != nil {
+		return "", err
+	}
+
+	return base64.RawURLEncoding.EncodeToString(sessionBytes), nil
+}
+
+func (h *Handlers) findGrantedBySession(session string) *authed {
+	if session == "" {
+		return nil
+	}
+
+	h.auditLock.Lock()
+	copiedGranted := make([]*authed, len(h.granted))
+	copy(copiedGranted, h.granted)
+	h.auditLock.Unlock()
+
+	for _, authRecord := range copiedGranted {
+		authRecord.recordEditLock.Lock()
+		matches := subtle.ConstantTimeCompare([]byte(authRecord.Session), []byte(session)) == 1
+		authRecord.recordEditLock.Unlock()
+		if matches {
+			return authRecord
+		}
+	}
+
+	return nil
 }

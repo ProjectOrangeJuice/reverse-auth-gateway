@@ -22,7 +22,14 @@ func (h *Handlers) UnlockPage(g *gin.Context) {
 
 		if subtle.ConstantTimeCompare([]byte(password), []byte(h.unlockPasswd)) == 1 {
 			h.metrics.CorrectPasswordCount.Inc()
-			h.addGranted(g.ClientIP())
+			record, err := h.addGranted(g.ClientIP())
+			if err != nil {
+				log.Printf("Failed to create auth session for %v: %v", g.ClientIP(), err)
+				g.Status(http.StatusInternalServerError)
+				return
+			}
+			g.SetSameSite(http.SameSiteLaxMode)
+			g.SetCookie(h.cookieName, record.Session, h.cookieMaxAgeSeconds(), "/", h.cookieDomain, true, true)
 		} else {
 			h.metrics.WrongPasswordCount.Inc()
 			recordInterface, ok := h.activity.Load(g.ClientIP())
@@ -47,11 +54,16 @@ func (h *Handlers) UnlockPage(g *gin.Context) {
 	h.Templates.ExecuteTemplate(g.Writer, "unlock", nil)
 }
 
-func (h *Handlers) addGranted(ip string) *authed {
+func (h *Handlers) addGranted(ip string) (*authed, error) {
 	now := time.Now()
+	session, err := generateSession()
+	if err != nil {
+		return nil, err
+	}
 	a := authed{
 		IP:         ip,
 		AuthedTime: now,
+		Session:    session,
 		Authed:     now.Format(time.UnixDate),
 		Requests:   make(map[time.Time]int),
 	}
@@ -64,7 +76,7 @@ func (h *Handlers) addGranted(ip string) *authed {
 	go h.saveGranted()
 	go h.sendUnlockNotification(ip)
 
-	return &a
+	return &a, nil
 }
 
 func handleBucket(a *authed) {

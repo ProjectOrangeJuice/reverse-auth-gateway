@@ -13,10 +13,23 @@ import (
 
 func (h *Handlers) AccessPage(g *gin.Context) {
 	connectorIP := g.ClientIP()
-	
+
 	// Record access page visit metrics
 	h.metrics.AccessPageVisits.Inc()
 	h.recordAccessRequest(g)
+
+	if session, err := g.Cookie(h.cookieName); err == nil {
+		if authRecord := h.findGrantedBySession(session); authRecord != nil {
+			if h.isExpired(authRecord) {
+				log.Printf("Session for IP %s has expired (authed %v)", authRecord.IP, authRecord.AuthedTime)
+				h.clearSessionCookie(g)
+			} else {
+				addAccess(authRecord, g.Request.Host)
+				g.Status(http.StatusOK)
+				return
+			}
+		}
+	}
 
 	h.auditLock.Lock()
 	copiedGranted := make([]*authed, len(h.granted))
@@ -53,7 +66,7 @@ func (h *Handlers) checkLocalIP(ip string) (bool, *authed) {
 	if os.Getenv("ALLOW_LOCAL_BYPASS") != "true" {
 		return false, nil
 	}
-	
+
 	ipSplit := strings.Split(ip, ".")
 	if len(ipSplit) != 4 {
 		return false, nil
@@ -66,7 +79,12 @@ func (h *Handlers) checkLocalIP(ip string) (bool, *authed) {
 
 	if ipSplit[0] == "192" && ipSplit[1] == "168" && localDigit < 30 {
 		log.Printf("Local IP bypass enabled: adding %s to allowed list", ip)
-		return true, h.addGranted(ip)
+		record, err := h.addGranted(ip)
+		if err != nil {
+			log.Printf("could not create local bypass auth for %s: %v", ip, err)
+			return false, nil
+		}
+		return true, record
 	}
 	return false, nil
 }
@@ -106,9 +124,9 @@ func (h *Handlers) recordAccessRequest(g *gin.Context) {
 		Host:      sanitizeForLog(host),
 		Method:    g.Request.Method,
 	}
-	
+
 	h.metrics.AccessRequests.Inc()
-	
+
 	h.metrics.lock.Lock()
 	h.metrics.AccessDetails = append(h.metrics.AccessDetails, request)
 	// Keep only last 1000 requests to prevent memory issues
@@ -116,4 +134,9 @@ func (h *Handlers) recordAccessRequest(g *gin.Context) {
 		h.metrics.AccessDetails = h.metrics.AccessDetails[len(h.metrics.AccessDetails)-1000:]
 	}
 	h.metrics.lock.Unlock()
+}
+
+func (h *Handlers) clearSessionCookie(g *gin.Context) {
+	g.SetSameSite(http.SameSiteLaxMode)
+	g.SetCookie(h.cookieName, "", -1, "/", h.cookieDomain, true, true)
 }
