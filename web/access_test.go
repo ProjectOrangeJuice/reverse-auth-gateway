@@ -86,6 +86,70 @@ func TestAccessPageDoesNotSetSessionCookieForUnauthorizedIP(t *testing.T) {
 	}
 }
 
+func TestAccessCookieDebugSummarizesCookieShapeWithoutValues(t *testing.T) {
+	h := newTestHandlers()
+	h.granted = append(h.granted, &authed{
+		IP:         "203.0.113.10",
+		AuthedTime: time.Now(),
+		Session:    "valid-session",
+		Requests:   make(map[time.Time]int),
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/access", nil)
+	request.AddCookie(&http.Cookie{Name: "gateway_session", Value: "invalid-session"})
+	request.AddCookie(&http.Cookie{Name: "ha_session", Value: "do-not-log"})
+	request.AddCookie(&http.Cookie{Name: "gateway_session", Value: "valid-session"})
+
+	debug := h.accessCookieDebug(request)
+
+	if debug.Count != 3 {
+		t.Fatalf("expected 3 cookies, got %d", debug.Count)
+	}
+	if debug.Names != "gateway_session*2,ha_session" {
+		t.Fatalf("unexpected cookie names summary: %q", debug.Names)
+	}
+	if !debug.GatewayPresent {
+		t.Fatal("expected gateway cookie to be present")
+	}
+	if debug.GatewayCount != 2 {
+		t.Fatalf("expected 2 gateway cookies, got %d", debug.GatewayCount)
+	}
+	if !debug.GatewayValid {
+		t.Fatal("expected at least one valid gateway cookie")
+	}
+	if debug.GatewayExpired {
+		t.Fatal("expected gateway cookie to be unexpired")
+	}
+	if debug.GatewayRecordIP != "203.0.113.10" {
+		t.Fatalf("unexpected gateway record IP: %q", debug.GatewayRecordIP)
+	}
+	if strings.Contains(debug.Names, "valid-session") || strings.Contains(debug.Names, "do-not-log") {
+		t.Fatalf("cookie values leaked in summary: %q", debug.Names)
+	}
+}
+
+func TestAccessCookieDebugDetectsMissingGatewaySession(t *testing.T) {
+	h := newTestHandlers()
+
+	request := httptest.NewRequest(http.MethodGet, "/access", nil)
+	request.AddCookie(&http.Cookie{Name: "ha_session", Value: "do-not-log"})
+
+	debug := h.accessCookieDebug(request)
+
+	if debug.Count != 1 {
+		t.Fatalf("expected 1 cookie, got %d", debug.Count)
+	}
+	if debug.Names != "ha_session" {
+		t.Fatalf("unexpected cookie names summary: %q", debug.Names)
+	}
+	if debug.GatewayPresent {
+		t.Fatal("expected gateway cookie to be missing")
+	}
+	if debug.GatewayValid {
+		t.Fatal("expected gateway cookie to be invalid")
+	}
+}
+
 func newTestHandlers() Handlers {
 	return Handlers{
 		expirationDays: 30,
