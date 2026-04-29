@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"gateway/web"
 	"log"
 	"net"
@@ -15,13 +16,28 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+var defaultTrustedProxies = []string{
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"100.64.0.0/10",
+	"127.0.0.1/8",
+	"::1/128",
+	"fc00::/7",
+	"fe80::/10",
+}
+
 func main() {
+	configureGinMode()
+
 	handlers := web.SetupHandlers()
-	router := gin.Default()
+	router := newRouter()
 
 	trustedProxies := getTrustedProxies()
 	if len(trustedProxies) > 0 {
-		router.SetTrustedProxies(trustedProxies)
+		if err := router.SetTrustedProxies(trustedProxies); err != nil {
+			log.Fatalf("invalid TRUSTED_PROXIES configuration: %v", err)
+		}
 	}
 
 	router.Use(func(c *gin.Context) {
@@ -39,12 +55,12 @@ func main() {
 	accessLim := tollbooth.NewLimiter(50, &limiter.ExpirableOptions{DefaultExpirationTTL: time.Hour})
 
 	// Low limit for metrics scraping
-	metricsLim := tollbooth.NewLimiter(1, &limiter.ExpirableOptions{DefaultExpirationTTL: time.Hour})
+	// metricsLim := tollbooth.NewLimiter(1, &limiter.ExpirableOptions{DefaultExpirationTTL: time.Hour})
 
 	router.POST("/unlock", tollbooth_gin.LimitHandler(authLim), handlers.UnlockPage)
 	router.GET("/unlock", tollbooth_gin.LimitHandler(authLim), handlers.UnlockPage)
 	router.GET("/access", tollbooth_gin.LimitHandler(accessLim), handlers.AccessPage)
-	router.GET("/metrics", tollbooth_gin.LimitHandler(metricsLim), handlers.MetricsHandler)
+	// router.GET("/metrics", tollbooth_gin.LimitHandler(metricsLim), handlers.MetricsHandler)
 	router.Static("/css", "web/src/css")
 
 	port := os.Getenv("PORT")
@@ -64,19 +80,56 @@ func main() {
 	log.Fatal(server.ListenAndServe())
 }
 
+func configureGinMode() {
+	if os.Getenv("GIN_MODE") == "" {
+		gin.SetMode(gin.ReleaseMode)
+	}
+}
+
+func newRouter() *gin.Engine {
+	router := gin.New()
+	router.Use(gin.LoggerWithFormatter(safeGinLogFormatter), gin.Recovery())
+	return router
+}
+
+func safeGinLogFormatter(param gin.LogFormatterParams) string {
+	path := "/"
+	if param.Request != nil && param.Request.URL != nil && param.Request.URL.EscapedPath() != "" {
+		path = param.Request.URL.EscapedPath()
+	}
+
+	return fmt.Sprintf("[GIN] %v | %3d | %13v | %15s | %-7s %q\n",
+		param.TimeStamp.Format("2006/01/02 - 15:04:05"),
+		param.StatusCode,
+		param.Latency,
+		param.ClientIP,
+		param.Method,
+		path,
+	)
+}
+
 func getTrustedProxies() []string {
 	proxies := os.Getenv("TRUSTED_PROXIES")
 	if proxies == "" {
-		return nil
+		return append([]string(nil), defaultTrustedProxies...)
 	}
 	var valid []string
 	for _, p := range strings.Split(proxies, ",") {
 		p = strings.TrimSpace(p)
-		if net.ParseIP(p) != nil {
+		if isTrustedProxyValue(p) {
 			valid = append(valid, p)
 		} else {
-			log.Printf("Ignoring invalid trusted proxy IP: %q", p)
+			log.Printf("Ignoring invalid trusted proxy value: %q", p)
 		}
 	}
 	return valid
+}
+
+func isTrustedProxyValue(proxy string) bool {
+	if net.ParseIP(proxy) != nil {
+		return true
+	}
+
+	_, _, err := net.ParseCIDR(proxy)
+	return err == nil
 }

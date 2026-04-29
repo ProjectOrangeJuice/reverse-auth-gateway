@@ -1,6 +1,9 @@
 package web
 
 import (
+	"log"
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -24,5 +27,8 @@ func (h *Handlers) AuditPage(g *gin.Context) {
 	})
 
 	view := auditView{Granted: copiedGranted, Failed: m}
-	h.Templates.ExecuteTemplate(g.Writer, "audit", view)
+	if err := h.Templates.ExecuteTemplate(g.Writer, "audit", view); err != nil {
+		log.Printf("Failed to render audit page: %v", err)
+		g.Status(http.StatusInternalServerError)
+	}
 }

@@ -1,8 +1,11 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -86,68 +89,124 @@ func TestAccessPageDoesNotSetSessionCookieForUnauthorizedIP(t *testing.T) {
 	}
 }
 
-func TestAccessCookieDebugSummarizesCookieShapeWithoutValues(t *testing.T) {
+func TestAddGrantedReusesExistingSessionForIP(t *testing.T) {
 	h := newTestHandlers()
-	h.granted = append(h.granted, &authed{
-		IP:         "203.0.113.10",
-		AuthedTime: time.Now(),
-		Session:    "valid-session",
-		Requests:   make(map[time.Time]int),
-	})
+	h.persistFile = filepath.Join(t.TempDir(), "missing", "granted.json")
 
-	request := httptest.NewRequest(http.MethodGet, "/access", nil)
-	request.AddCookie(&http.Cookie{Name: "gateway_session", Value: "invalid-session"})
-	request.AddCookie(&http.Cookie{Name: "ha_session", Value: "do-not-log"})
-	request.AddCookie(&http.Cookie{Name: "gateway_session", Value: "valid-session"})
+	first, err := h.addGranted("203.0.113.10")
+	if err != nil {
+		t.Fatalf("first addGranted failed: %v", err)
+	}
+	firstSession := first.Session
+	firstAuthedAt := first.AuthedTime
 
-	debug := h.accessCookieDebug(request)
+	time.Sleep(time.Millisecond)
 
-	if debug.Count != 3 {
-		t.Fatalf("expected 3 cookies, got %d", debug.Count)
+	second, err := h.addGranted("203.0.113.10")
+	if err != nil {
+		t.Fatalf("second addGranted failed: %v", err)
 	}
-	if debug.Names != "gateway_session*2,ha_session" {
-		t.Fatalf("unexpected cookie names summary: %q", debug.Names)
+
+	if second != first {
+		t.Fatal("expected repeat grant to reuse existing record")
 	}
-	if !debug.GatewayPresent {
-		t.Fatal("expected gateway cookie to be present")
+	if second.Session != firstSession {
+		t.Fatalf("expected session %q to be reused, got %q", firstSession, second.Session)
 	}
-	if debug.GatewayCount != 2 {
-		t.Fatalf("expected 2 gateway cookies, got %d", debug.GatewayCount)
+	if len(h.granted) != 1 {
+		t.Fatalf("expected one granted record, got %d", len(h.granted))
 	}
-	if !debug.GatewayValid {
-		t.Fatal("expected at least one valid gateway cookie")
-	}
-	if debug.GatewayExpired {
-		t.Fatal("expected gateway cookie to be unexpired")
-	}
-	if debug.GatewayRecordIP != "203.0.113.10" {
-		t.Fatalf("unexpected gateway record IP: %q", debug.GatewayRecordIP)
-	}
-	if strings.Contains(debug.Names, "valid-session") || strings.Contains(debug.Names, "do-not-log") {
-		t.Fatalf("cookie values leaked in summary: %q", debug.Names)
+	if !second.AuthedTime.After(firstAuthedAt) {
+		t.Fatalf("expected auth timestamp to be refreshed, first %v second %v", firstAuthedAt, second.AuthedTime)
 	}
 }
 
-func TestAccessCookieDebugDetectsMissingGatewaySession(t *testing.T) {
+func TestLoadGrantedDedupesByIPAndPreservesFirstSession(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	firstAuthedAt := now.Add(-2 * time.Hour)
+	secondAuthedAt := now.Add(-1 * time.Hour)
+	otherAuthedAt := now
+
+	persisted := []persistedAuthed{
+		{
+			IP:              "203.0.113.10",
+			AuthedTime:      firstAuthedAt,
+			Session:         "first-session",
+			LastAccess:      "first access",
+			DomainsAccessed: []string{"home.harriso.co.uk"},
+			Requests:        map[time.Time]int{firstAuthedAt: 2},
+		},
+		{
+			IP:              "203.0.113.10",
+			AuthedTime:      secondAuthedAt,
+			Session:         "second-session",
+			LastAccess:      "second access",
+			DomainsAccessed: []string{"home.harriso.co.uk", "bit.harriso.co.uk"},
+			Requests:        map[time.Time]int{secondAuthedAt: 3},
+		},
+		{
+			IP:         "198.51.100.20",
+			AuthedTime: otherAuthedAt,
+			Session:    "other-session",
+			Requests:   map[time.Time]int{otherAuthedAt: 1},
+		},
+	}
+
+	data, err := json.Marshal(persisted)
+	if err != nil {
+		t.Fatalf("marshal persisted grants: %v", err)
+	}
+	persistFile := filepath.Join(t.TempDir(), "granted.json")
+	if err := os.WriteFile(persistFile, data, 0600); err != nil {
+		t.Fatalf("write persisted grants: %v", err)
+	}
+
 	h := newTestHandlers()
+	h.persistFile = persistFile
 
-	request := httptest.NewRequest(http.MethodGet, "/access", nil)
-	request.AddCookie(&http.Cookie{Name: "ha_session", Value: "do-not-log"})
+	h.loadGranted()
 
-	debug := h.accessCookieDebug(request)
+	if len(h.granted) != 2 {
+		t.Fatalf("expected two granted records after dedupe, got %d", len(h.granted))
+	}
 
-	if debug.Count != 1 {
-		t.Fatalf("expected 1 cookie, got %d", debug.Count)
+	deduped := findTestGrant(&h, "203.0.113.10")
+	if deduped == nil {
+		t.Fatal("expected deduped grant for 203.0.113.10")
 	}
-	if debug.Names != "ha_session" {
-		t.Fatalf("unexpected cookie names summary: %q", debug.Names)
+	if deduped.Session != "first-session" {
+		t.Fatalf("expected first session to be preserved, got %q", deduped.Session)
 	}
-	if debug.GatewayPresent {
-		t.Fatal("expected gateway cookie to be missing")
+	if !deduped.AuthedTime.Equal(secondAuthedAt) {
+		t.Fatalf("expected newest auth time to be retained, got %v", deduped.AuthedTime)
 	}
-	if debug.GatewayValid {
-		t.Fatal("expected gateway cookie to be invalid")
+	if len(deduped.DomainsAccessed) != 2 {
+		t.Fatalf("expected merged domains, got %#v", deduped.DomainsAccessed)
 	}
+	if deduped.Requests[firstAuthedAt] != 2 || deduped.Requests[secondAuthedAt] != 3 {
+		t.Fatalf("expected merged request buckets, got %#v", deduped.Requests)
+	}
+
+	savedData, err := os.ReadFile(persistFile)
+	if err != nil {
+		t.Fatalf("read cleaned persist file: %v", err)
+	}
+	var saved []persistedAuthed
+	if err := json.Unmarshal(savedData, &saved); err != nil {
+		t.Fatalf("unmarshal cleaned persist file: %v", err)
+	}
+	if len(saved) != 2 {
+		t.Fatalf("expected cleaned persist file to have two records, got %d", len(saved))
+	}
+}
+
+func findTestGrant(h *Handlers, ip string) *authed {
+	for _, grant := range h.granted {
+		if grant.IP == ip {
+			return grant
+		}
+	}
+	return nil
 }
 
 func newTestHandlers() Handlers {

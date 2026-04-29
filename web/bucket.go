@@ -20,7 +20,7 @@ func (h *Handlers) BucketPage(g *gin.Context) {
 		g.Status(http.StatusBadRequest)
 		return
 	}
-	
+
 	var record *authed
 	log.Printf("Looking up bucket data for %s", sanitizeForLog(lookup))
 	for _, a := range copiedGranted {
@@ -29,5 +29,8 @@ func (h *Handlers) BucketPage(g *gin.Context) {
 		}
 	}
 
-	h.Templates.ExecuteTemplate(g.Writer, "buckets", record)
+	if err := h.Templates.ExecuteTemplate(g.Writer, "buckets", record); err != nil {
+		log.Printf("Failed to render bucket page: %v", err)
+		g.Status(http.StatusInternalServerError)
+	}
 }

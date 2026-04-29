@@ -31,7 +31,7 @@ The server listens on port 9090.
 ## Environment Variables
 
 - `GATEWAY_PASSWORD` (required): Password for the `/unlock` endpoint
-- `TRUSTED_PROXIES` (optional): Comma-separated list of trusted proxy IPs (e.g., "10.0.0.1,10.0.0.2")
+- `TRUSTED_PROXIES` (optional): Comma-separated list of trusted proxy IPs/CIDRs. Defaults to private ranges plus Tailscale CGNAT; override for stricter deployments.
 - `ALLOW_LOCAL_BYPASS` (optional): Set to "true" to allow local IPs (192.168.0-29.x) to bypass authentication
 - `IP_EXPIRATION_DAYS` (optional): Number of days before an authorized IP expires (default: 30)
 - `PERSIST_FILE` (optional): Path to file for persisting authorized IPs (default: "granted_ips.json")
@@ -54,17 +54,17 @@ All HTTP handlers and core logic are in the [web/](web/) package:
 - `authed` struct tracks per-IP data: auth time, last access, domains accessed, and hourly request buckets
 - Input validation functions (`validatePassword`, `validateQueryParam`, `sanitizeForLog`) that check for null bytes, control characters, valid UTF-8, and length limits
 - `SetupHandlers()` loads HTML templates, initializes Prometheus metrics, restores persisted IPs, and starts expiration cleanup
-- `loadGranted()` restores authorized IPs from JSON file on startup, skipping expired entries
+- `loadGranted()` restores authorized IPs from JSON file on startup, skipping expired entries and deduping multiple records for the same IP
 - `saveGranted()` persists current authorized IPs to JSON file (called after each new auth)
 - `cleanupExpiredIPs()` background goroutine that removes expired IPs every hour
 - `isExpired()` checks if an IP authorization has exceeded the expiration duration
 
 **[web/unlock.go](web/unlock.go)** - Authentication flow:
 - Validates password input against security criteria
-- On correct password: adds IP to `granted` slice, spawns hourly cleanup goroutine, and persists to file
-- On wrong password: records sanitized attempt in `activity` sync.Map
+- On correct password: adds or refreshes the IP in `granted`, reusing the existing session cookie for that IP, and persists to file
+- On wrong password: records the failed attempt time in `activity` sync.Map without storing the attempted password
 - `handleBucket()` goroutine prunes request buckets older than 7 days every hour
-- `addGranted()` now stores `AuthedTime` as `time.Time` for expiration tracking
+- `addGranted()` stores `AuthedTime` as `time.Time` for expiration tracking and preserves one active session per IP
 
 **[web/access.go](web/access.go)** - Authorization logic:
 - Checks if client IP is in `granted` slice and verifies it hasn't expired
@@ -93,16 +93,18 @@ Prometheus counters exposed at `/metrics`:
 ### Security Features
 - Rate limiting on POST /unlock (5 req/sec, burst 5)
 - Input validation for passwords and query parameters (null bytes, control chars, UTF-8, length limits)
-- Password sanitization before logging to prevent log injection
+- Failed login attempts are logged without attempted password values
 - Request history limited to 1000 entries to prevent memory exhaustion
 - ReadHeaderTimeout of 3 seconds on HTTP server
 - Local IP bypass requires explicit opt-in via environment variable
 
 ## Testing Strategy
-No test files currently exist. When adding tests, consider:
-- Unit tests for input validation functions in [web/web.go](web/web.go)
-- Integration tests for the auth flow (unlock → access)
-- Concurrent access tests for the `granted` slice and request bucket cleanup
+Tests cover:
+- Session-cookie setting and rejection behavior in [web/access_test.go](web/access_test.go)
+- Reusing the same session for repeat grants from one IP
+- Startup dedupe of persisted records for the same IP
+- Redacting query strings from Gin access logs in [gateway_test.go](gateway_test.go)
+- Accepting trusted proxy IP and CIDR values
 - Rate limiting behavior tests
 
 ## Docker Deployment

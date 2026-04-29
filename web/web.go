@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"html/template"
 	"log"
 	"os"
@@ -82,11 +83,13 @@ type failedLogin struct {
 	When     string
 }
 
-func SetupHandlers() Handlers {
+var errMissingIP = errors.New("missing IP")
+
+func SetupHandlers() *Handlers {
 	templates, err := template.ParseGlob("web/src/*.html")
 	if err != nil {
 		log.Fatalf("%s\n", err)
-		return Handlers{}
+		return &Handlers{}
 	}
 
 	unlockPasswd := os.Getenv("GATEWAY_PASSWORD")
@@ -158,7 +161,7 @@ func SetupHandlers() Handlers {
 	// Start background cleanup goroutine
 	go h.cleanupExpiredIPs()
 
-	return h
+	return &h
 }
 
 // Input validation functions
@@ -224,6 +227,21 @@ func validateQueryParam(param string) (string, bool) {
 	return param, true
 }
 
+func newAuthed(ip string, authedAt time.Time) (*authed, error) {
+	session, err := generateSession()
+	if err != nil {
+		return nil, err
+	}
+
+	return &authed{
+		IP:         ip,
+		AuthedTime: authedAt,
+		Session:    session,
+		Authed:     authedAt.Format(time.UnixDate),
+		Requests:   make(map[time.Time]int),
+	}, nil
+}
+
 // loadGranted reads persisted IPs from file on startup
 func (h *Handlers) loadGranted() {
 	data, err := os.ReadFile(h.persistFile)
@@ -243,36 +261,88 @@ func (h *Handlers) loadGranted() {
 	}
 
 	now := time.Now()
-	expirationDuration := time.Duration(h.expirationDays) * 24 * time.Hour
-
-	h.auditLock.Lock()
-	defer h.auditLock.Unlock()
+	expirationDuration := h.expirationDuration()
+	byIP := make(map[string]*authed, len(persisted))
+	loaded := make([]*authed, 0, len(persisted))
+	expiredCount := 0
+	duplicateCount := 0
+	repairedCount := 0
+	invalidCount := 0
 
 	for _, p := range persisted {
-		// Skip expired entries
 		if now.Sub(p.AuthedTime) > expirationDuration {
 			log.Printf("Skipping expired IP %s (authed %v)", p.IP, p.AuthedTime)
+			expiredCount++
 			continue
 		}
 
-		a := &authed{
-			IP:              p.IP,
-			AuthedTime:      p.AuthedTime,
-			Session:         p.Session,
-			Authed:          p.AuthedTime.Format(time.UnixDate),
-			LastAccess:      p.LastAccess,
-			DomainsAccessed: p.DomainsAccessed,
-			Requests:        p.Requests,
+		a, repaired, err := authedFromPersisted(p)
+		if err != nil {
+			log.Printf("Skipping persisted IP %s: %v", p.IP, err)
+			invalidCount++
+			continue
 		}
-		if a.Requests == nil {
-			a.Requests = make(map[time.Time]int)
+
+		if existing := byIP[a.IP]; existing != nil {
+			mergeAuthRecords(existing, a)
+			duplicateCount++
+			continue
 		}
-		h.granted = append(h.granted, a)
-		go handleBucket(a)
-		log.Printf("Restored IP %s from persist file (authed %v)", p.IP, p.AuthedTime)
+
+		if repaired {
+			repairedCount++
+		}
+		byIP[a.IP] = a
+		loaded = append(loaded, a)
 	}
 
-	log.Printf("Loaded %d IP(s) from persist file", len(h.granted))
+	h.auditLock.Lock()
+	h.granted = append(h.granted, loaded...)
+	h.auditLock.Unlock()
+
+	for _, a := range loaded {
+		go handleBucket(a)
+		log.Printf("Restored IP %s from persist file (authed %v)", a.IP, a.AuthedTime)
+	}
+
+	log.Printf("Loaded %d IP(s) from persist file", len(loaded))
+
+	if expiredCount > 0 || duplicateCount > 0 || repairedCount > 0 || invalidCount > 0 {
+		log.Printf("Cleaned persist data: removed %d expired, merged %d duplicate, repaired %d missing session, skipped %d invalid record(s)", expiredCount, duplicateCount, repairedCount, invalidCount)
+		h.saveGranted()
+	}
+}
+
+func authedFromPersisted(p persistedAuthed) (*authed, bool, error) {
+	if strings.TrimSpace(p.IP) == "" {
+		return nil, false, errMissingIP
+	}
+
+	repaired := false
+	session := p.Session
+	if session == "" {
+		var err error
+		session, err = generateSession()
+		if err != nil {
+			return nil, false, err
+		}
+		repaired = true
+	}
+
+	requests := make(map[time.Time]int, len(p.Requests))
+	for bucket, count := range p.Requests {
+		requests[bucket] = count
+	}
+
+	return &authed{
+		IP:              p.IP,
+		AuthedTime:      p.AuthedTime,
+		Session:         session,
+		Authed:          p.AuthedTime.Format(time.UnixDate),
+		LastAccess:      p.LastAccess,
+		DomainsAccessed: append([]string(nil), p.DomainsAccessed...),
+		Requests:        requests,
+	}, repaired, nil
 }
 
 // saveGranted writes current granted IPs to file
@@ -280,16 +350,7 @@ func (h *Handlers) saveGranted() {
 	h.auditLock.Lock()
 	persisted := make([]persistedAuthed, 0, len(h.granted))
 	for _, a := range h.granted {
-		a.recordEditLock.Lock()
-		persisted = append(persisted, persistedAuthed{
-			IP:              a.IP,
-			AuthedTime:      a.AuthedTime,
-			Session:         a.Session,
-			LastAccess:      a.LastAccess,
-			DomainsAccessed: a.DomainsAccessed,
-			Requests:        a.Requests,
-		})
-		a.recordEditLock.Unlock()
+		persisted = append(persisted, snapshotPersisted(a))
 	}
 	h.auditLock.Unlock()
 
@@ -314,26 +375,13 @@ func (h *Handlers) cleanupExpiredIPs() {
 
 	for range ticker.C {
 		now := time.Now()
-		expirationDuration := time.Duration(h.expirationDays) * 24 * time.Hour
 
 		h.auditLock.Lock()
-		newGranted := make([]*authed, 0, len(h.granted))
-		removed := 0
-
-		for _, a := range h.granted {
-			if now.Sub(a.AuthedTime) > expirationDuration {
-				log.Printf("Removing expired IP %s (authed %v)", a.IP, a.AuthedTime)
-				removed++
-			} else {
-				newGranted = append(newGranted, a)
-			}
-		}
-
-		h.granted = newGranted
+		removed, merged := h.compactGrantedLocked(now)
 		h.auditLock.Unlock()
 
-		if removed > 0 {
-			log.Printf("Cleanup: removed %d expired IP(s)", removed)
+		if removed > 0 || merged > 0 {
+			log.Printf("Cleanup: removed %d expired and merged %d duplicate IP record(s)", removed, merged)
 			h.saveGranted()
 		}
 	}
@@ -341,12 +389,19 @@ func (h *Handlers) cleanupExpiredIPs() {
 
 // isExpired checks if an IP has expired
 func (h *Handlers) isExpired(a *authed) bool {
-	expirationDuration := time.Duration(h.expirationDays) * 24 * time.Hour
-	return time.Since(a.AuthedTime) > expirationDuration
+	a.recordEditLock.Lock()
+	authedTime := a.AuthedTime
+	a.recordEditLock.Unlock()
+
+	return time.Since(authedTime) > h.expirationDuration()
 }
 
 func (h *Handlers) cookieMaxAgeSeconds() int {
 	return h.expirationDays * 24 * 60 * 60
+}
+
+func (h *Handlers) expirationDuration() time.Duration {
+	return time.Duration(h.expirationDays) * 24 * time.Hour
 }
 
 func generateSession() (string, error) {
@@ -378,4 +433,125 @@ func (h *Handlers) findGrantedBySession(session string) *authed {
 	}
 
 	return nil
+}
+
+func (h *Handlers) reuseGrantedIPLocked(ip string, now time.Time) *authed {
+	removed, merged := h.compactGrantedLocked(now)
+	if removed > 0 || merged > 0 {
+		log.Printf("Cleaned auth list: removed %d expired and merged %d duplicate IP record(s)", removed, merged)
+	}
+
+	for _, record := range h.granted {
+		if record.IP == ip {
+			refreshAuthRecord(record, now)
+			return record
+		}
+	}
+
+	return nil
+}
+
+func (h *Handlers) compactGrantedLocked(now time.Time) (int, int) {
+	keptByIP := make(map[string]*authed, len(h.granted))
+	compacted := h.granted[:0]
+	removed := 0
+	merged := 0
+
+	for _, record := range h.granted {
+		if h.recordExpiredAt(record, now) {
+			record.recordEditLock.Lock()
+			log.Printf("Removing expired IP %s (authed %v)", record.IP, record.AuthedTime)
+			record.recordEditLock.Unlock()
+			removed++
+			continue
+		}
+
+		if existing := keptByIP[record.IP]; existing != nil {
+			mergeAuthRecords(existing, record)
+			merged++
+			continue
+		}
+
+		keptByIP[record.IP] = record
+		compacted = append(compacted, record)
+	}
+
+	h.granted = compacted
+	return removed, merged
+}
+
+func (h *Handlers) recordExpiredAt(record *authed, now time.Time) bool {
+	record.recordEditLock.Lock()
+	authedTime := record.AuthedTime
+	record.recordEditLock.Unlock()
+
+	return now.Sub(authedTime) > h.expirationDuration()
+}
+
+func refreshAuthRecord(record *authed, authedAt time.Time) {
+	record.recordEditLock.Lock()
+	defer record.recordEditLock.Unlock()
+
+	record.AuthedTime = authedAt
+	record.Authed = authedAt.Format(time.UnixDate)
+	if record.Requests == nil {
+		record.Requests = make(map[time.Time]int)
+	}
+}
+
+func mergeAuthRecords(keep, drop *authed) {
+	if keep == nil || drop == nil || keep == drop {
+		return
+	}
+
+	dropSnapshot := snapshotPersisted(drop)
+
+	keep.recordEditLock.Lock()
+	defer keep.recordEditLock.Unlock()
+
+	if dropSnapshot.AuthedTime.After(keep.AuthedTime) {
+		keep.AuthedTime = dropSnapshot.AuthedTime
+		keep.Authed = dropSnapshot.AuthedTime.Format(time.UnixDate)
+	}
+	if keep.LastAccess == "" {
+		keep.LastAccess = dropSnapshot.LastAccess
+	}
+	if keep.Requests == nil {
+		keep.Requests = make(map[time.Time]int)
+	}
+
+	existingDomains := make(map[string]struct{}, len(keep.DomainsAccessed)+len(dropSnapshot.DomainsAccessed))
+	for _, domain := range keep.DomainsAccessed {
+		existingDomains[domain] = struct{}{}
+	}
+	for _, domain := range dropSnapshot.DomainsAccessed {
+		if _, ok := existingDomains[domain]; ok {
+			continue
+		}
+		keep.DomainsAccessed = append(keep.DomainsAccessed, domain)
+		existingDomains[domain] = struct{}{}
+	}
+
+	for bucket, count := range dropSnapshot.Requests {
+		keep.Requests[bucket] += count
+	}
+}
+
+func snapshotPersisted(record *authed) persistedAuthed {
+	record.recordEditLock.Lock()
+	defer record.recordEditLock.Unlock()
+
+	requests := make(map[time.Time]int, len(record.Requests))
+	for bucket, count := range record.Requests {
+		requests[bucket] = count
+	}
+
+	return persistedAuthed{
+		IP:              record.IP,
+		AuthedTime:      record.AuthedTime,
+		Session:         record.Session,
+		LastAccess:      record.LastAccess,
+		DomainsAccessed: append([]string(nil), record.DomainsAccessed...),
+		Requests:        requests,
+	}
 }
