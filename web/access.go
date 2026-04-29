@@ -17,6 +17,7 @@ func (h *Handlers) AccessPage(g *gin.Context) {
 	// Record access page visit metrics
 	h.metrics.AccessPageVisits.Inc()
 	h.recordAccessRequest(g)
+	logAccessDebug(g, connectorIP)
 
 	if session, err := g.Cookie(h.cookieName); err == nil {
 		if authRecord := h.findGrantedBySession(session); authRecord != nil {
@@ -139,4 +140,47 @@ func (h *Handlers) recordAccessRequest(g *gin.Context) {
 func (h *Handlers) clearSessionCookie(g *gin.Context) {
 	g.SetSameSite(http.SameSiteLaxMode)
 	g.SetCookie(h.cookieName, "", -1, "/", h.cookieDomain, true, true)
+}
+
+func logAccessDebug(g *gin.Context, clientIP string) {
+	if os.Getenv("ACCESS_DEBUG") != "true" {
+		return
+	}
+
+	upgrade := g.GetHeader("Upgrade")
+	log.Printf(
+		"ACCESS_DEBUG client_ip=%q remote_addr=%q host=%q method=%q request_uri=%q user_agent=%q x_forwarded_for=%q x_real_ip=%q forwarded=%q x_forwarded_host=%q x_forwarded_proto=%q x_forwarded_method=%q x_forwarded_uri=%q upgrade=%q connection=%q is_websocket=%t",
+		sanitizeForLog(clientIP),
+		sanitizeForLog(g.Request.RemoteAddr),
+		sanitizeForLog(g.Request.Host),
+		sanitizeForLog(g.Request.Method),
+		safeAccessDebugURI(g),
+		sanitizeForLog(g.GetHeader("User-Agent")),
+		sanitizeForLog(g.GetHeader("X-Forwarded-For")),
+		sanitizeForLog(g.GetHeader("X-Real-IP")),
+		sanitizeForLog(g.GetHeader("Forwarded")),
+		sanitizeForLog(g.GetHeader("X-Forwarded-Host")),
+		sanitizeForLog(g.GetHeader("X-Forwarded-Proto")),
+		sanitizeForLog(g.GetHeader("X-Forwarded-Method")),
+		sanitizeForLog(g.GetHeader("X-Forwarded-Uri")),
+		sanitizeForLog(upgrade),
+		sanitizeForLog(g.GetHeader("Connection")),
+		strings.EqualFold(upgrade, "websocket"),
+	)
+}
+
+func safeAccessDebugURI(g *gin.Context) string {
+	if g.Request.URL == nil {
+		return ""
+	}
+
+	requestURI := g.Request.URL.EscapedPath()
+	if requestURI == "" {
+		requestURI = "/"
+	}
+	if g.Request.URL.RawQuery != "" {
+		requestURI += "?<redacted>"
+	}
+
+	return sanitizeForLog(requestURI)
 }
