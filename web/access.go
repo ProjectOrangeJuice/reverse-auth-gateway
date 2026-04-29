@@ -46,6 +46,7 @@ func (h *Handlers) AccessPage(g *gin.Context) {
 				return
 			}
 			addAccess(authRecord, g.Request.Host)
+			h.setSessionCookie(g, authRecord)
 			g.Status(http.StatusOK)
 			return
 		}
@@ -54,6 +55,7 @@ func (h *Handlers) AccessPage(g *gin.Context) {
 	local, record := h.checkLocalIP(connectorIP)
 	if local {
 		addAccess(record, g.Request.Host)
+		h.setSessionCookie(g, record)
 		g.Status(http.StatusOK)
 		return
 	}
@@ -140,6 +142,11 @@ func (h *Handlers) recordAccessRequest(g *gin.Context) {
 func (h *Handlers) clearSessionCookie(g *gin.Context) {
 	g.SetSameSite(http.SameSiteLaxMode)
 	g.SetCookie(h.cookieName, "", -1, "/", h.cookieDomain, true, true)
+}
+
+func (h *Handlers) setSessionCookie(g *gin.Context, authRecord *authed) {
+	g.SetSameSite(http.SameSiteLaxMode)
+	g.SetCookie(h.cookieName, authRecord.Session, h.cookieMaxAgeSeconds(), "/", h.cookieDomain, true, true)
 }
 
 func logAccessDebug(g *gin.Context, clientIP string) {

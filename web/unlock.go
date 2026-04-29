@@ -28,8 +28,7 @@ func (h *Handlers) UnlockPage(g *gin.Context) {
 				g.Status(http.StatusInternalServerError)
 				return
 			}
-			g.SetSameSite(http.SameSiteLaxMode)
-			g.SetCookie(h.cookieName, record.Session, h.cookieMaxAgeSeconds(), "/", h.cookieDomain, true, true)
+			h.setSessionCookie(g, record)
 		} else {
 			h.metrics.WrongPasswordCount.Inc()
 			recordInterface, ok := h.activity.Load(g.ClientIP())
