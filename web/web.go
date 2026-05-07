@@ -66,7 +66,19 @@ type authed struct {
 	DomainsAccessed []string          `json:"domains_accessed"`
 	Requests        map[time.Time]int `json:"requests"`
 
-	recordEditLock sync.Mutex `json:"-"`
+	recordEditLock sync.Mutex    `json:"-"`
+	stop           chan struct{} `json:"-"`
+	stopOnce       sync.Once     `json:"-"`
+}
+
+// stopBucket signals the per-record handleBucket goroutine to exit.
+// Safe to call multiple times and on records that never started a goroutine.
+func (a *authed) stopBucket() {
+	a.stopOnce.Do(func() {
+		if a.stop != nil {
+			close(a.stop)
+		}
+	})
 }
 
 type persistedAuthed struct {
@@ -239,6 +251,7 @@ func newAuthed(ip string, authedAt time.Time) (*authed, error) {
 		Session:    session,
 		Authed:     authedAt.Format(time.UnixDate),
 		Requests:   make(map[time.Time]int),
+		stop:       make(chan struct{}),
 	}, nil
 }
 
@@ -342,6 +355,7 @@ func authedFromPersisted(p persistedAuthed) (*authed, bool, error) {
 		LastAccess:      p.LastAccess,
 		DomainsAccessed: append([]string(nil), p.DomainsAccessed...),
 		Requests:        requests,
+		stop:            make(chan struct{}),
 	}, repaired, nil
 }
 
@@ -462,6 +476,7 @@ func (h *Handlers) compactGrantedLocked(now time.Time) (int, int) {
 			record.recordEditLock.Lock()
 			log.Printf("Removing expired IP %s (authed %v)", record.IP, record.AuthedTime)
 			record.recordEditLock.Unlock()
+			record.stopBucket()
 			removed++
 			continue
 		}
@@ -503,6 +518,8 @@ func mergeAuthRecords(keep, drop *authed) {
 	if keep == nil || drop == nil || keep == drop {
 		return
 	}
+
+	defer drop.stopBucket()
 
 	dropSnapshot := snapshotPersisted(drop)
 

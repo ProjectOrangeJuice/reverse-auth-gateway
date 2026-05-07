@@ -88,16 +88,24 @@ func (h *Handlers) addGranted(ip string) (*authed, error) {
 
 func handleBucket(a *authed) {
 	ticker := time.NewTicker(time.Hour)
-	for range ticker.C {
-		log.Printf("Hourly cleanup tick for IP %s", a.IP)
-		now := time.Now().UTC().Truncate(time.Hour)
+	defer ticker.Stop()
 
-		a.recordEditLock.Lock()
-		for bucket := range a.Requests {
-			if now.Sub(bucket) > 7*24*time.Hour {
-				delete(a.Requests, bucket)
+	for {
+		select {
+		case <-a.stop:
+			log.Printf("Stopping bucket cleanup for IP %s", a.IP)
+			return
+		case <-ticker.C:
+			log.Printf("Hourly cleanup tick for IP %s", a.IP)
+			now := time.Now().UTC().Truncate(time.Hour)
+
+			a.recordEditLock.Lock()
+			for bucket := range a.Requests {
+				if now.Sub(bucket) > 7*24*time.Hour {
+					delete(a.Requests, bucket)
+				}
 			}
+			a.recordEditLock.Unlock()
 		}
-		a.recordEditLock.Unlock()
 	}
 }
