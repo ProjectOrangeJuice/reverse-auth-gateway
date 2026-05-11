@@ -78,13 +78,9 @@ func main() {
 	// Higher limit for access checks (nginx calls this per request)
 	accessLim := tollbooth.NewLimiter(50, &limiter.ExpirableOptions{DefaultExpirationTTL: time.Hour})
 
-	// Low limit for metrics scraping
-	// metricsLim := tollbooth.NewLimiter(1, &limiter.ExpirableOptions{DefaultExpirationTTL: time.Hour})
-
 	router.POST("/unlock", tollbooth_gin.LimitHandler(authLim), handlers.UnlockPage)
 	router.GET("/unlock", tollbooth_gin.LimitHandler(authLim), handlers.UnlockPage)
 	router.GET("/access", tollbooth_gin.LimitHandler(accessLim), handlers.AccessPage)
-	// router.GET("/metrics", tollbooth_gin.LimitHandler(metricsLim), handlers.MetricsHandler)
 	router.Static("/css", "web/src/css")
 
 	port := os.Getenv("PORT")

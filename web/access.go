@@ -6,7 +6,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -14,26 +13,22 @@ import (
 func (h *Handlers) AccessPage(g *gin.Context) {
 	connectorIP := g.ClientIP()
 
-	h.metrics.AccessPageVisits.Inc()
-	h.recordAccessRequest(g)
-
 	if session, err := g.Cookie(h.cookieName); err == nil {
 		if authRecord := h.findGrantedBySession(session); authRecord != nil {
 			if h.isExpired(authRecord) {
 				log.Printf("Session for IP %s has expired (authed %v)", authRecord.IP, authRecord.AuthedTime)
 				h.clearSessionCookie(g)
 			} else {
-				addAccess(authRecord, g.Request.Host)
 				g.Status(http.StatusOK)
 				return
 			}
 		}
 	}
 
-	h.auditLock.Lock()
+	h.grantedLock.Lock()
 	copiedGranted := make([]*authed, len(h.granted))
 	copy(copiedGranted, h.granted)
-	h.auditLock.Unlock()
+	h.grantedLock.Unlock()
 
 	for _, authRecord := range copiedGranted {
 		if authRecord.IP == connectorIP {
@@ -43,7 +38,6 @@ func (h *Handlers) AccessPage(g *gin.Context) {
 				g.Status(http.StatusUnauthorized)
 				return
 			}
-			addAccess(authRecord, g.Request.Host)
 			h.setSessionCookie(g, authRecord)
 			g.Status(http.StatusOK)
 			return
@@ -52,7 +46,6 @@ func (h *Handlers) AccessPage(g *gin.Context) {
 
 	local, record := h.checkLocalIP(connectorIP)
 	if local {
-		addAccess(record, g.Request.Host)
 		h.setSessionCookie(g, record)
 		g.Status(http.StatusOK)
 		return
@@ -88,53 +81,6 @@ func (h *Handlers) checkLocalIP(ip string) (bool, *authed) {
 		return true, record
 	}
 	return false, nil
-}
-
-func addAccess(a *authed, domain string) {
-	log.Printf("%s accessed %s", a.IP, domain)
-
-	a.recordEditLock.Lock()
-	defer a.recordEditLock.Unlock()
-
-	a.LastAccess = time.Now().Format(time.UnixDate)
-
-	newDomain := true
-	for _, d := range a.DomainsAccessed {
-		if d == domain {
-			newDomain = false
-			break
-		}
-	}
-	if newDomain {
-		a.DomainsAccessed = append(a.DomainsAccessed, domain)
-	}
-
-	now := time.Now().UTC().Truncate(time.Hour)
-	a.Requests[now]++
-}
-
-func (h *Handlers) recordAccessRequest(g *gin.Context) {
-	host := g.Request.Host
-	if len(host) > 253 {
-		host = host[:253]
-	}
-	request := AccessRequest{
-		IP:        g.ClientIP(),
-		Timestamp: time.Now(),
-		UserAgent: g.GetHeader("User-Agent"),
-		Host:      sanitizeForLog(host),
-		Method:    g.Request.Method,
-	}
-
-	h.metrics.AccessRequests.Inc()
-
-	h.metrics.lock.Lock()
-	h.metrics.AccessDetails = append(h.metrics.AccessDetails, request)
-	// Keep only last 1000 requests to prevent memory issues
-	if len(h.metrics.AccessDetails) > 1000 {
-		h.metrics.AccessDetails = h.metrics.AccessDetails[len(h.metrics.AccessDetails)-1000:]
-	}
-	h.metrics.lock.Unlock()
 }
 
 func (h *Handlers) clearSessionCookie(g *gin.Context) {

@@ -43,17 +43,16 @@ The server listens on port 9090.
 - `POST /unlock` - Password authentication with rate limiting
 - `GET /unlock` - Unlock page (no rate limit)
 - `GET /access` - Authorization check endpoint (called by nginx auth_request)
-- `GET /metrics` - Prometheus metrics endpoint
 - `/css/*` - Static CSS files
 
 ### Web Package Structure
 All HTTP handlers and core logic are in the [web/](web/) package:
 
 **[web/web.go](web/web.go)** - Core types and initialization:
-- `Handlers` struct holds templates, password, authorized IPs (`granted` slice), metrics, and persistence config
-- `authed` struct tracks per-IP data: auth time, last access, domains accessed, and hourly request buckets
-- Input validation functions (`validatePassword`, `validateQueryParam`, `sanitizeForLog`) that check for null bytes, control characters, valid UTF-8, and length limits
-- `SetupHandlers()` loads HTML templates, initializes Prometheus metrics, restores persisted IPs, and starts expiration cleanup
+- `Handlers` struct holds templates, password, authorized IPs (`granted` slice), and persistence config
+- `authed` struct tracks the minimum auth state: IP, auth time, and session token
+- Input validation functions check passwords for null bytes, valid UTF-8, and length limits
+- `SetupHandlers()` loads HTML templates, restores persisted IPs, and starts expiration cleanup
 - `loadGranted()` restores authorized IPs from JSON file on startup, skipping expired entries and deduping multiple records for the same IP
 - `saveGranted()` persists current authorized IPs to JSON file (called after each new auth)
 - `cleanupExpiredIPs()` background goroutine that removes expired IPs every hour
@@ -62,39 +61,22 @@ All HTTP handlers and core logic are in the [web/](web/) package:
 **[web/unlock.go](web/unlock.go)** - Authentication flow:
 - Validates password input against security criteria
 - On correct password: adds or refreshes the IP in `granted`, reusing the existing session cookie for that IP, and persists to file
-- On wrong password: records the failed attempt time in `activity` sync.Map without storing the attempted password
-- `handleBucket()` goroutine prunes request buckets older than 7 days every hour
+- On wrong password: logs the failed login IP without storing attempted passwords
 - `addGranted()` stores `AuthedTime` as `time.Time` for expiration tracking and preserves one active session per IP
 
 **[web/access.go](web/access.go)** - Authorization logic:
 - Checks if client IP is in `granted` slice and verifies it hasn't expired
 - Returns HTTP 401 if IP is found but has exceeded expiration duration
 - Falls back to local IP bypass if `ALLOW_LOCAL_BYPASS=true` and IP matches 192.168.0-29.x
-- Records access metrics (IP, timestamp, user agent, host, method) up to 1000 most recent requests
-- `addAccess()` updates last access time, domains list, and increments hourly request counter
-
-**[web/metrics.go](web/metrics.go)** - Exposes Prometheus metrics handler
-
-**[web/bucket.go](web/bucket.go)** - Displays per-IP request bucket data (validates IP query parameter)
-
-### Metrics
-Prometheus counters exposed at `/metrics`:
-- `gateway_access_page_visits_total` - Total `/access` endpoint visits
-- `gateway_wrong_password_attempts_total` - Failed auth attempts
-- `gateway_correct_password_attempts_total` - Successful auth attempts
-- `gateway_access_requests_total` - Total access requests with detailed tracking
 
 ### Concurrency Patterns
-- `auditLock` (mutex) protects the `granted` slice
-- `activity` (sync.Map) stores failed login attempts per IP
-- Each `authed` record has `recordEditLock` (mutex) protecting its request bucket map
-- Each authed IP gets its own cleanup goroutine that runs hourly to prune old data
+- `grantedLock` (mutex) protects the `granted` slice
+- Each `authed` record has `recordEditLock` (mutex) protecting its auth timestamp and session token
 
 ### Security Features
 - Rate limiting on POST /unlock (5 req/sec, burst 5)
-- Input validation for passwords and query parameters (null bytes, control chars, UTF-8, length limits)
-- Failed login attempts are logged without attempted password values
-- Request history limited to 1000 entries to prevent memory exhaustion
+- Input validation for passwords (null bytes, UTF-8, length limits)
+- Failed login attempts are logged without storing attempted password values
 - ReadHeaderTimeout of 3 seconds on HTTP server
 - Local IP bypass requires explicit opt-in via environment variable
 

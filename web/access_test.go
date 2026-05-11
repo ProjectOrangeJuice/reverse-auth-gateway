@@ -11,8 +11,16 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/prometheus/client_golang/prometheus"
 )
+
+type legacyPersistedAuthed struct {
+	IP              string            `json:"ip"`
+	AuthedTime      time.Time         `json:"authed_time"`
+	Session         string            `json:"session"`
+	LastAccess      string            `json:"last_access"`
+	DomainsAccessed []string          `json:"domains_accessed"`
+	Requests        map[time.Time]int `json:"requests"`
+}
 
 func TestAccessPageSetsSessionCookieForAuthorizedIP(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -22,7 +30,6 @@ func TestAccessPageSetsSessionCookieForAuthorizedIP(t *testing.T) {
 		IP:         "203.0.113.10",
 		AuthedTime: time.Now(),
 		Session:    "session-token",
-		Requests:   make(map[time.Time]int),
 	})
 
 	w := httptest.NewRecorder()
@@ -50,7 +57,6 @@ func TestAccessPageDoesNotSetSessionCookieForExistingValidSession(t *testing.T) 
 		IP:         "203.0.113.10",
 		AuthedTime: time.Now(),
 		Session:    "session-token",
-		Requests:   make(map[time.Time]int),
 	})
 
 	w := httptest.NewRecorder()
@@ -127,7 +133,7 @@ func TestLoadGrantedDedupesByIPAndPreservesFirstSession(t *testing.T) {
 	secondAuthedAt := now.Add(-1 * time.Hour)
 	otherAuthedAt := now
 
-	persisted := []persistedAuthed{
+	persisted := []legacyPersistedAuthed{
 		{
 			IP:              "203.0.113.10",
 			AuthedTime:      firstAuthedAt,
@@ -180,12 +186,6 @@ func TestLoadGrantedDedupesByIPAndPreservesFirstSession(t *testing.T) {
 	if !deduped.AuthedTime.Equal(secondAuthedAt) {
 		t.Fatalf("expected newest auth time to be retained, got %v", deduped.AuthedTime)
 	}
-	if len(deduped.DomainsAccessed) != 2 {
-		t.Fatalf("expected merged domains, got %#v", deduped.DomainsAccessed)
-	}
-	if deduped.Requests[firstAuthedAt] != 2 || deduped.Requests[secondAuthedAt] != 3 {
-		t.Fatalf("expected merged request buckets, got %#v", deduped.Requests)
-	}
 
 	savedData, err := os.ReadFile(persistFile)
 	if err != nil {
@@ -197,6 +197,17 @@ func TestLoadGrantedDedupesByIPAndPreservesFirstSession(t *testing.T) {
 	}
 	if len(saved) != 2 {
 		t.Fatalf("expected cleaned persist file to have two records, got %d", len(saved))
+	}
+	var rawSaved []map[string]interface{}
+	if err := json.Unmarshal(savedData, &rawSaved); err != nil {
+		t.Fatalf("unmarshal raw cleaned persist file: %v", err)
+	}
+	for _, record := range rawSaved {
+		for _, removedField := range []string{"last_access", "domains_accessed", "requests"} {
+			if _, ok := record[removedField]; ok {
+				t.Fatalf("expected saved record to omit %q, got %#v", removedField, record)
+			}
+		}
 	}
 }
 
@@ -213,9 +224,5 @@ func newTestHandlers() Handlers {
 	return Handlers{
 		expirationDays: 30,
 		cookieName:     "gateway_session",
-		metrics: &Metrics{
-			AccessPageVisits: prometheus.NewCounter(prometheus.CounterOpts{Name: "test_access_page_visits_total"}),
-			AccessRequests:   prometheus.NewCounter(prometheus.CounterOpts{Name: "test_access_requests_total"}),
-		},
 	}
 }

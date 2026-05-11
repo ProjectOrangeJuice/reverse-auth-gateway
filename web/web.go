@@ -9,25 +9,19 @@ import (
 	"html/template"
 	"log"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
-
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 type Handlers struct {
 	Templates    *template.Template
 	unlockPasswd string
 
-	auditLock      sync.Mutex // Not concerned for performance
+	grantedLock    sync.Mutex // Not concerned for performance
 	granted        []*authed
-	activity       sync.Map
-	metrics        *Metrics
 	persistFile    string
 	expirationDays int
 	cookieDomain   string
@@ -40,59 +34,18 @@ type Handlers struct {
 	smtpPass    string
 }
 
-type Metrics struct {
-	AccessPageVisits     prometheus.Counter
-	WrongPasswordCount   prometheus.Counter
-	CorrectPasswordCount prometheus.Counter
-	AccessRequests       prometheus.Counter
-	AccessDetails        []AccessRequest
-	lock                 sync.RWMutex
-}
-
-type AccessRequest struct {
-	IP        string
-	Timestamp time.Time
-	UserAgent string
-	Host      string
-	Method    string
-}
-
 type authed struct {
-	IP              string
-	AuthedTime      time.Time         `json:"authed_time"`
-	Session         string            `json:"session"`
-	Authed          string            `json:"-"` // Keep for backward compatibility, don't persist
-	LastAccess      string            `json:"last_access"`
-	DomainsAccessed []string          `json:"domains_accessed"`
-	Requests        map[time.Time]int `json:"requests"`
+	IP         string    `json:"ip"`
+	AuthedTime time.Time `json:"authed_time"`
+	Session    string    `json:"session"`
 
-	recordEditLock sync.Mutex    `json:"-"`
-	stop           chan struct{} `json:"-"`
-	stopOnce       sync.Once     `json:"-"`
-}
-
-// stopBucket signals the per-record handleBucket goroutine to exit.
-// Safe to call multiple times and on records that never started a goroutine.
-func (a *authed) stopBucket() {
-	a.stopOnce.Do(func() {
-		if a.stop != nil {
-			close(a.stop)
-		}
-	})
+	recordEditLock sync.Mutex `json:"-"`
 }
 
 type persistedAuthed struct {
-	IP              string            `json:"ip"`
-	AuthedTime      time.Time         `json:"authed_time"`
-	Session         string            `json:"session"`
-	LastAccess      string            `json:"last_access"`
-	DomainsAccessed []string          `json:"domains_accessed"`
-	Requests        map[time.Time]int `json:"requests"`
-}
-
-type failedLogin struct {
-	Password string
-	When     string
+	IP         string    `json:"ip"`
+	AuthedTime time.Time `json:"authed_time"`
+	Session    string    `json:"session"`
 }
 
 var errMissingIP = errors.New("missing IP")
@@ -124,25 +77,6 @@ func SetupHandlers() *Handlers {
 		}
 	}
 
-	metrics := &Metrics{
-		AccessPageVisits: promauto.NewCounter(prometheus.CounterOpts{
-			Name: "gateway_access_page_visits_total",
-			Help: "The total number of visits to the access page",
-		}),
-		WrongPasswordCount: promauto.NewCounter(prometheus.CounterOpts{
-			Name: "gateway_wrong_password_attempts_total",
-			Help: "The total number of wrong password attempts",
-		}),
-		CorrectPasswordCount: promauto.NewCounter(prometheus.CounterOpts{
-			Name: "gateway_correct_password_attempts_total",
-			Help: "The total number of correct password attempts",
-		}),
-		AccessRequests: promauto.NewCounter(prometheus.CounterOpts{
-			Name: "gateway_access_requests_total",
-			Help: "The total number of access requests with details",
-		}),
-	}
-
 	smtpHost := os.Getenv("SMTP_HOST")
 	smtpPort := os.Getenv("SMTP_PORT")
 	if smtpPort == "" {
@@ -155,7 +89,6 @@ func SetupHandlers() *Handlers {
 	h := Handlers{
 		Templates:      templates,
 		unlockPasswd:   unlockPasswd,
-		metrics:        metrics,
 		persistFile:    persistFile,
 		expirationDays: expirationDays,
 		cookieDomain:   cookieDomain,
@@ -204,41 +137,6 @@ func validatePassword(password string) (string, bool) {
 	return password, true
 }
 
-func sanitizeForLog(input string) string {
-	// Remove control characters and null bytes for safe logging
-	re := regexp.MustCompile(`[\x00-\x1f\x7f-\x9f]`)
-	sanitized := re.ReplaceAllString(input, "")
-
-	// Limit length for logs
-	if len(sanitized) > 50 {
-		sanitized = sanitized[:47] + "..."
-	}
-
-	return sanitized
-}
-
-func validateQueryParam(param string) (string, bool) {
-	// Check for valid UTF-8
-	if !utf8.ValidString(param) {
-		return "", false
-	}
-
-	// Check for null bytes
-	if strings.Contains(param, "\x00") {
-		return "", false
-	}
-
-	// Limit length
-	if len(param) > 100 {
-		return "", false
-	}
-
-	// Trim whitespace
-	param = strings.TrimSpace(param)
-
-	return param, true
-}
-
 func newAuthed(ip string, authedAt time.Time) (*authed, error) {
 	session, err := generateSession()
 	if err != nil {
@@ -249,9 +147,6 @@ func newAuthed(ip string, authedAt time.Time) (*authed, error) {
 		IP:         ip,
 		AuthedTime: authedAt,
 		Session:    session,
-		Authed:     authedAt.Format(time.UnixDate),
-		Requests:   make(map[time.Time]int),
-		stop:       make(chan struct{}),
 	}, nil
 }
 
@@ -309,12 +204,11 @@ func (h *Handlers) loadGranted() {
 		loaded = append(loaded, a)
 	}
 
-	h.auditLock.Lock()
+	h.grantedLock.Lock()
 	h.granted = append(h.granted, loaded...)
-	h.auditLock.Unlock()
+	h.grantedLock.Unlock()
 
 	for _, a := range loaded {
-		go handleBucket(a)
 		log.Printf("Restored IP %s from persist file (authed %v)", a.IP, a.AuthedTime)
 	}
 
@@ -342,31 +236,21 @@ func authedFromPersisted(p persistedAuthed) (*authed, bool, error) {
 		repaired = true
 	}
 
-	requests := make(map[time.Time]int, len(p.Requests))
-	for bucket, count := range p.Requests {
-		requests[bucket] = count
-	}
-
 	return &authed{
-		IP:              p.IP,
-		AuthedTime:      p.AuthedTime,
-		Session:         session,
-		Authed:          p.AuthedTime.Format(time.UnixDate),
-		LastAccess:      p.LastAccess,
-		DomainsAccessed: append([]string(nil), p.DomainsAccessed...),
-		Requests:        requests,
-		stop:            make(chan struct{}),
+		IP:         p.IP,
+		AuthedTime: p.AuthedTime,
+		Session:    session,
 	}, repaired, nil
 }
 
 // saveGranted writes current granted IPs to file
 func (h *Handlers) saveGranted() {
-	h.auditLock.Lock()
+	h.grantedLock.Lock()
 	persisted := make([]persistedAuthed, 0, len(h.granted))
 	for _, a := range h.granted {
 		persisted = append(persisted, snapshotPersisted(a))
 	}
-	h.auditLock.Unlock()
+	h.grantedLock.Unlock()
 
 	data, err := json.MarshalIndent(persisted, "", "  ")
 	if err != nil {
@@ -390,9 +274,9 @@ func (h *Handlers) cleanupExpiredIPs() {
 	for range ticker.C {
 		now := time.Now()
 
-		h.auditLock.Lock()
+		h.grantedLock.Lock()
 		removed, merged := h.compactGrantedLocked(now)
-		h.auditLock.Unlock()
+		h.grantedLock.Unlock()
 
 		if removed > 0 || merged > 0 {
 			log.Printf("Cleanup: removed %d expired and merged %d duplicate IP record(s)", removed, merged)
@@ -432,10 +316,10 @@ func (h *Handlers) findGrantedBySession(session string) *authed {
 		return nil
 	}
 
-	h.auditLock.Lock()
+	h.grantedLock.Lock()
 	copiedGranted := make([]*authed, len(h.granted))
 	copy(copiedGranted, h.granted)
-	h.auditLock.Unlock()
+	h.grantedLock.Unlock()
 
 	for _, authRecord := range copiedGranted {
 		authRecord.recordEditLock.Lock()
@@ -476,7 +360,6 @@ func (h *Handlers) compactGrantedLocked(now time.Time) (int, int) {
 			record.recordEditLock.Lock()
 			log.Printf("Removing expired IP %s (authed %v)", record.IP, record.AuthedTime)
 			record.recordEditLock.Unlock()
-			record.stopBucket()
 			removed++
 			continue
 		}
@@ -508,18 +391,12 @@ func refreshAuthRecord(record *authed, authedAt time.Time) {
 	defer record.recordEditLock.Unlock()
 
 	record.AuthedTime = authedAt
-	record.Authed = authedAt.Format(time.UnixDate)
-	if record.Requests == nil {
-		record.Requests = make(map[time.Time]int)
-	}
 }
 
 func mergeAuthRecords(keep, drop *authed) {
 	if keep == nil || drop == nil || keep == drop {
 		return
 	}
-
-	defer drop.stopBucket()
 
 	dropSnapshot := snapshotPersisted(drop)
 
@@ -528,29 +405,6 @@ func mergeAuthRecords(keep, drop *authed) {
 
 	if dropSnapshot.AuthedTime.After(keep.AuthedTime) {
 		keep.AuthedTime = dropSnapshot.AuthedTime
-		keep.Authed = dropSnapshot.AuthedTime.Format(time.UnixDate)
-	}
-	if keep.LastAccess == "" {
-		keep.LastAccess = dropSnapshot.LastAccess
-	}
-	if keep.Requests == nil {
-		keep.Requests = make(map[time.Time]int)
-	}
-
-	existingDomains := make(map[string]struct{}, len(keep.DomainsAccessed)+len(dropSnapshot.DomainsAccessed))
-	for _, domain := range keep.DomainsAccessed {
-		existingDomains[domain] = struct{}{}
-	}
-	for _, domain := range dropSnapshot.DomainsAccessed {
-		if _, ok := existingDomains[domain]; ok {
-			continue
-		}
-		keep.DomainsAccessed = append(keep.DomainsAccessed, domain)
-		existingDomains[domain] = struct{}{}
-	}
-
-	for bucket, count := range dropSnapshot.Requests {
-		keep.Requests[bucket] += count
 	}
 }
 
@@ -558,17 +412,9 @@ func snapshotPersisted(record *authed) persistedAuthed {
 	record.recordEditLock.Lock()
 	defer record.recordEditLock.Unlock()
 
-	requests := make(map[time.Time]int, len(record.Requests))
-	for bucket, count := range record.Requests {
-		requests[bucket] = count
-	}
-
 	return persistedAuthed{
-		IP:              record.IP,
-		AuthedTime:      record.AuthedTime,
-		Session:         record.Session,
-		LastAccess:      record.LastAccess,
-		DomainsAccessed: append([]string(nil), record.DomainsAccessed...),
-		Requests:        requests,
+		IP:         record.IP,
+		AuthedTime: record.AuthedTime,
+		Session:    record.Session,
 	}
 }

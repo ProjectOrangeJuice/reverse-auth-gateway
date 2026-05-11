@@ -21,7 +21,6 @@ func (h *Handlers) UnlockPage(g *gin.Context) {
 		}
 
 		if subtle.ConstantTimeCompare([]byte(password), []byte(h.unlockPasswd)) == 1 {
-			h.metrics.CorrectPasswordCount.Inc()
 			record, err := h.addGranted(g.ClientIP())
 			if err != nil {
 				log.Printf("Failed to create auth session for %v: %v", g.ClientIP(), err)
@@ -30,24 +29,6 @@ func (h *Handlers) UnlockPage(g *gin.Context) {
 			}
 			h.setSessionCookie(g, record)
 		} else {
-			h.metrics.WrongPasswordCount.Inc()
-			recordInterface, ok := h.activity.Load(g.ClientIP())
-			var records []failedLogin
-			if ok {
-				records = recordInterface.([]failedLogin)
-			}
-
-			records = append(records, failedLogin{
-				Password: sanitizeForLog(password),
-				When:     time.Now().Format(time.UnixDate),
-			})
-
-			// Cap per-IP failed login history to prevent memory exhaustion
-			if len(records) > 100 {
-				records = records[len(records)-100:]
-			}
-
-			h.activity.Store(g.ClientIP(), records)
 			log.Printf("Failed login from %v", g.ClientIP())
 		}
 	}
@@ -61,9 +42,9 @@ func (h *Handlers) UnlockPage(g *gin.Context) {
 func (h *Handlers) addGranted(ip string) (*authed, error) {
 	now := time.Now()
 
-	h.auditLock.Lock()
+	h.grantedLock.Lock()
 	if existing := h.reuseGrantedIPLocked(ip, now); existing != nil {
-		h.auditLock.Unlock()
+		h.grantedLock.Unlock()
 		log.Printf("Reusing existing auth session for %v", ip)
 		go h.saveGranted()
 		return existing, nil
@@ -71,41 +52,16 @@ func (h *Handlers) addGranted(ip string) (*authed, error) {
 
 	record, err := newAuthed(ip, now)
 	if err != nil {
-		h.auditLock.Unlock()
+		h.grantedLock.Unlock()
 		return nil, err
 	}
 	h.granted = append(h.granted, record)
-	h.auditLock.Unlock()
+	h.grantedLock.Unlock()
 
-	go handleBucket(record)
 	log.Printf("Adding %v to allowed list", ip)
 
 	go h.saveGranted()
 	go h.sendUnlockNotification(ip)
 
 	return record, nil
-}
-
-func handleBucket(a *authed) {
-	ticker := time.NewTicker(time.Hour)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-a.stop:
-			log.Printf("Stopping bucket cleanup for IP %s", a.IP)
-			return
-		case <-ticker.C:
-			log.Printf("Hourly cleanup tick for IP %s", a.IP)
-			now := time.Now().UTC().Truncate(time.Hour)
-
-			a.recordEditLock.Lock()
-			for bucket := range a.Requests {
-				if now.Sub(bucket) > 7*24*time.Hour {
-					delete(a.Requests, bucket)
-				}
-			}
-			a.recordEditLock.Unlock()
-		}
-	}
 }
