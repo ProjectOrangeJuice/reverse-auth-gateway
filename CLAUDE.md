@@ -31,6 +31,8 @@ The server listens on port 9090.
 ## Environment Variables
 
 - `GATEWAY_PASSWORD` (required): Password for the `/unlock` endpoint
+- `COOKIE_DOMAIN` (optional): Domain attribute for the session cookie. **Set this to the parent domain (e.g. `harriso.co.uk`) for multi-subdomain deployments** so one unlock covers `bit.`/`home.`/`unlock.` and, crucially, survives client IP changes (mobile, VPN, iCloud Private Relay — which rotate the source IP per connection). Unset = a host-only cookie scoped to the unlock subdomain, which will NOT be sent to the protected services, leaving them dependent on the IP allowlist alone.
+- `COOKIE_NAME` (optional): Session cookie name (default: "gateway_session")
 - `CLIENT_IP_HEADER` (optional): Header the fronting proxy uses to pass the real client IP (default: "X-Gateway-Client-IP"). The gateway trusts this because it is only reachable from Caddy over the internal network, and Caddy overwrites it per request from Cloudflare's `CF-Connecting-IP`. Falls back to the connecting IP if unset/missing/malformed. This is what makes IP whitelisting key on the per-visitor IP rather than a shared Cloudflare PoP.
 - `TRUSTED_PROXIES` (optional): Comma-separated list of trusted proxy IPs/CIDRs. Defaults to private ranges plus Tailscale CGNAT. Cloudflare ranges are intentionally excluded — the real client IP arrives via `CLIENT_IP_HEADER`, not by walking X-Forwarded-For across Cloudflare.
 - `ALLOW_LOCAL_BYPASS` (optional): Set to "true" to allow local IPs (192.168.0-29.x) to bypass authentication
