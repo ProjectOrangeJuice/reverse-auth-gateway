@@ -2,6 +2,7 @@ package web
 
 import (
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -11,7 +12,7 @@ import (
 )
 
 func (h *Handlers) AccessPage(g *gin.Context) {
-	connectorIP := g.ClientIP()
+	connectorIP := h.clientIP(g)
 
 	if session, err := g.Cookie(h.cookieName); err == nil {
 		if authRecord := h.findGrantedBySession(session); authRecord != nil {
@@ -91,4 +92,23 @@ func (h *Handlers) clearSessionCookie(g *gin.Context) {
 func (h *Handlers) setSessionCookie(g *gin.Context, authRecord *authed) {
 	g.SetSameSite(http.SameSiteLaxMode)
 	g.SetCookie(h.cookieName, authRecord.Session, h.cookieMaxAgeSeconds(), "/", h.cookieDomain, true, true)
+}
+
+// clientIP returns the real per-visitor IP. Behind Cloudflare + Railway, gin's
+// ClientIP() resolves to a shared Cloudflare PoP address, so the fronting Caddy
+// injects the resolved client IP via clientIPHeader (default
+// X-Gateway-Client-IP) and overwrites it on every request. We trust that header
+// because the gateway is only reachable from Caddy over the internal network.
+// Falls back to gin's ClientIP() for local/dev, or if the header is missing or
+// malformed.
+func (h *Handlers) clientIP(g *gin.Context) string {
+	if h.clientIPHeader != "" {
+		if v := strings.TrimSpace(g.GetHeader(h.clientIPHeader)); v != "" {
+			if net.ParseIP(v) != nil {
+				return v
+			}
+			log.Printf("Ignoring invalid %s header %q from %v", h.clientIPHeader, v, g.ClientIP())
+		}
+	}
+	return g.ClientIP()
 }

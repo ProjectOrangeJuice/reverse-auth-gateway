@@ -16,6 +16,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// defaultTrustedProxies is the set of hops directly in front of the gateway.
+// The real client IP no longer comes from walking X-Forwarded-For across
+// Cloudflare; the fronting Caddy resolves it (from CF-Connecting-IP) and passes
+// it explicitly via CLIENT_IP_HEADER. So we only trust the immediate private /
+// Tailscale hop here. The Cloudflare ranges were removed deliberately: trusting
+// them let a shared PoP egress IP masquerade as the client.
 var defaultTrustedProxies = []string{
 	"10.0.0.0/8",
 	"172.16.0.0/12",
@@ -25,30 +31,6 @@ var defaultTrustedProxies = []string{
 	"::1/128",
 	"fc00::/7",
 	"fe80::/10",
-	// Cloudflare IPv4 ranges - https://www.cloudflare.com/ips-v4
-	"173.245.48.0/20",
-	"103.21.244.0/22",
-	"103.22.200.0/22",
-	"103.31.4.0/22",
-	"141.101.64.0/18",
-	"108.162.192.0/18",
-	"190.93.240.0/20",
-	"188.114.96.0/20",
-	"197.234.240.0/22",
-	"198.41.128.0/17",
-	"162.158.0.0/15",
-	"104.16.0.0/13",
-	"104.24.0.0/14",
-	"172.64.0.0/13",
-	"131.0.72.0/22",
-	// Cloudflare IPv6 ranges - https://www.cloudflare.com/ips-v6
-	"2400:cb00::/32",
-	"2606:4700::/32",
-	"2803:f800::/32",
-	"2405:b500::/32",
-	"2405:8100::/32",
-	"2a06:98c0::/29",
-	"2c0f:f248::/32",
 }
 
 func main() {
@@ -71,8 +53,10 @@ func main() {
 		c.Next()
 	})
 
-	// 5 req/sec for auth endpoints
-	authLim := tollbooth.NewLimiter(5, &limiter.ExpirableOptions{DefaultExpirationTTL: time.Hour})
+	// Coarse throttle on the auth endpoints. The real brute-force defense is the
+	// per-IP lockout in the web package (keyed on the resolved client IP); this
+	// just smooths bursts.
+	authLim := tollbooth.NewLimiter(2, &limiter.ExpirableOptions{DefaultExpirationTTL: time.Hour})
 	authLim.SetBurst(5)
 
 	// Higher limit for access checks (nginx calls this per request)

@@ -22,10 +22,17 @@ type Handlers struct {
 
 	grantedLock    sync.Mutex // Not concerned for performance
 	granted        []*authed
+	saveLock       sync.Mutex // serializes persist-file writes (atomic save)
 	persistFile    string
 	expirationDays int
 	cookieDomain   string
 	cookieName     string
+	clientIPHeader string
+
+	loginLock        sync.Mutex
+	loginAttempts    map[string]*loginAttempt
+	maxLoginFailures int
+	lockoutDuration  time.Duration
 
 	notifyEmail string
 	smtpHost    string
@@ -67,6 +74,10 @@ func SetupHandlers() *Handlers {
 	if cookieName == "" {
 		cookieName = "gateway_session"
 	}
+	clientIPHeader := os.Getenv("CLIENT_IP_HEADER")
+	if clientIPHeader == "" {
+		clientIPHeader = "X-Gateway-Client-IP"
+	}
 
 	expirationDays := 30 // default
 	if expStr := os.Getenv("IP_EXPIRATION_DAYS"); expStr != "" {
@@ -74,6 +85,24 @@ func SetupHandlers() *Handlers {
 			expirationDays = days
 		} else {
 			log.Printf("Invalid IP_EXPIRATION_DAYS value '%s', using default of 30 days", expStr)
+		}
+	}
+
+	maxLoginFailures := 5 // lock the IP out after this many failed unlocks
+	if v := os.Getenv("MAX_LOGIN_FAILURES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxLoginFailures = n
+		} else {
+			log.Printf("Invalid MAX_LOGIN_FAILURES value '%s', using default of 5", v)
+		}
+	}
+
+	lockoutMinutes := 15 // how long a locked-out IP stays locked
+	if v := os.Getenv("LOCKOUT_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			lockoutMinutes = n
+		} else {
+			log.Printf("Invalid LOCKOUT_MINUTES value '%s', using default of 15", v)
 		}
 	}
 
@@ -87,17 +116,21 @@ func SetupHandlers() *Handlers {
 	notifyEmail := os.Getenv("NOTIFY_EMAIL")
 
 	h := Handlers{
-		Templates:      templates,
-		unlockPasswd:   unlockPasswd,
-		persistFile:    persistFile,
-		expirationDays: expirationDays,
-		cookieDomain:   cookieDomain,
-		cookieName:     cookieName,
-		notifyEmail:    notifyEmail,
-		smtpHost:       smtpHost,
-		smtpPort:       smtpPort,
-		smtpUser:       smtpUser,
-		smtpPass:       smtpPass,
+		Templates:        templates,
+		unlockPasswd:     unlockPasswd,
+		persistFile:      persistFile,
+		expirationDays:   expirationDays,
+		cookieDomain:     cookieDomain,
+		cookieName:       cookieName,
+		clientIPHeader:   clientIPHeader,
+		loginAttempts:    make(map[string]*loginAttempt),
+		maxLoginFailures: maxLoginFailures,
+		lockoutDuration:  time.Duration(lockoutMinutes) * time.Minute,
+		notifyEmail:      notifyEmail,
+		smtpHost:         smtpHost,
+		smtpPort:         smtpPort,
+		smtpUser:         smtpUser,
+		smtpPass:         smtpPass,
 	}
 
 	// Load persisted IPs on startup
@@ -243,8 +276,14 @@ func authedFromPersisted(p persistedAuthed) (*authed, bool, error) {
 	}, repaired, nil
 }
 
-// saveGranted writes current granted IPs to file
+// saveGranted writes current granted IPs to file. Writes are serialized behind
+// saveLock and committed atomically (temp file + rename) so concurrent grants
+// can't interleave and a crash mid-write can't truncate the file -- a truncated
+// file fails to parse on startup and drops every authorized IP.
 func (h *Handlers) saveGranted() {
+	h.saveLock.Lock()
+	defer h.saveLock.Unlock()
+
 	h.grantedLock.Lock()
 	persisted := make([]persistedAuthed, 0, len(h.granted))
 	for _, a := range h.granted {
@@ -258,8 +297,15 @@ func (h *Handlers) saveGranted() {
 		return
 	}
 
-	if err := os.WriteFile(h.persistFile, data, 0600); err != nil {
+	tmp := h.persistFile + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		log.Printf("Error writing persist file: %v", err)
+		return
+	}
+
+	if err := os.Rename(tmp, h.persistFile); err != nil {
+		log.Printf("Error replacing persist file: %v", err)
+		_ = os.Remove(tmp)
 		return
 	}
 
@@ -277,6 +323,8 @@ func (h *Handlers) cleanupExpiredIPs() {
 		h.grantedLock.Lock()
 		removed, merged := h.compactGrantedLocked(now)
 		h.grantedLock.Unlock()
+
+		h.pruneLoginAttempts(now)
 
 		if removed > 0 || merged > 0 {
 			log.Printf("Cleanup: removed %d expired and merged %d duplicate IP record(s)", removed, merged)

@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -211,6 +212,54 @@ func TestLoadGrantedDedupesByIPAndPreservesFirstSession(t *testing.T) {
 	}
 }
 
+func TestAccessPagePrefersClientIPHeader(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := newTestHandlers()
+	h.granted = append(h.granted, &authed{
+		IP:         "203.0.113.50",
+		AuthedTime: time.Now(),
+		Session:    "session-token",
+	})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/access", nil)
+	c.Request.RemoteAddr = "198.51.100.1:12345" // shared proxy / PoP address
+	c.Request.Header.Set("X-Gateway-Client-IP", "203.0.113.50")
+
+	h.AccessPage(c)
+
+	if c.Writer.Status() != http.StatusOK {
+		t.Fatalf("expected 200 when the client-IP header matches a grant, got %d", c.Writer.Status())
+	}
+}
+
+func TestAccessPageClientIPHeaderOverridesProxyAddr(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Regression guard for the core bug: a stranger sharing the granted
+	// proxy/PoP address must NOT be authorized off that shared address.
+	h := newTestHandlers()
+	h.granted = append(h.granted, &authed{
+		IP:         "198.51.100.1",
+		AuthedTime: time.Now(),
+		Session:    "session-token",
+	})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/access", nil)
+	c.Request.RemoteAddr = "198.51.100.1:12345"                 // granted, but shared
+	c.Request.Header.Set("X-Gateway-Client-IP", "203.0.113.99") // real visitor, not granted
+
+	h.AccessPage(c)
+
+	if c.Writer.Status() != http.StatusUnauthorized {
+		t.Fatalf("expected 401 when the real client IP is not granted, got %d", c.Writer.Status())
+	}
+}
+
 func findTestGrant(h *Handlers, ip string) *authed {
 	for _, grant := range h.granted {
 		if grant.IP == ip {
@@ -222,7 +271,12 @@ func findTestGrant(h *Handlers, ip string) *authed {
 
 func newTestHandlers() Handlers {
 	return Handlers{
-		expirationDays: 30,
-		cookieName:     "gateway_session",
+		Templates:        template.Must(template.New("unlock").Parse("unlock")),
+		expirationDays:   30,
+		cookieName:       "gateway_session",
+		clientIPHeader:   "X-Gateway-Client-IP",
+		loginAttempts:    make(map[string]*loginAttempt),
+		maxLoginFailures: 3,
+		lockoutDuration:  time.Minute,
 	}
 }

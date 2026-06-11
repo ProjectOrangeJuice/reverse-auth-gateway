@@ -31,9 +31,12 @@ The server listens on port 9090.
 ## Environment Variables
 
 - `GATEWAY_PASSWORD` (required): Password for the `/unlock` endpoint
-- `TRUSTED_PROXIES` (optional): Comma-separated list of trusted proxy IPs/CIDRs. Defaults to private ranges plus Tailscale CGNAT; override for stricter deployments.
+- `CLIENT_IP_HEADER` (optional): Header the fronting proxy uses to pass the real client IP (default: "X-Gateway-Client-IP"). The gateway trusts this because it is only reachable from Caddy over the internal network, and Caddy overwrites it per request from Cloudflare's `CF-Connecting-IP`. Falls back to the connecting IP if unset/missing/malformed. This is what makes IP whitelisting key on the per-visitor IP rather than a shared Cloudflare PoP.
+- `TRUSTED_PROXIES` (optional): Comma-separated list of trusted proxy IPs/CIDRs. Defaults to private ranges plus Tailscale CGNAT. Cloudflare ranges are intentionally excluded — the real client IP arrives via `CLIENT_IP_HEADER`, not by walking X-Forwarded-For across Cloudflare.
 - `ALLOW_LOCAL_BYPASS` (optional): Set to "true" to allow local IPs (192.168.0-29.x) to bypass authentication
 - `IP_EXPIRATION_DAYS` (optional): Number of days before an authorized IP expires (default: 30)
+- `MAX_LOGIN_FAILURES` (optional): Failed unlock attempts from one IP before it is locked out (default: 5)
+- `LOCKOUT_MINUTES` (optional): How long a locked-out IP stays locked, returning HTTP 429 (default: 15)
 - `PERSIST_FILE` (optional): Path to file for persisting authorized IPs (default: "granted_ips.json")
 
 ## Architecture
@@ -74,9 +77,13 @@ All HTTP handlers and core logic are in the [web/](web/) package:
 - Each `authed` record has `recordEditLock` (mutex) protecting its auth timestamp and session token
 
 ### Security Features
-- Rate limiting on POST /unlock (5 req/sec, burst 5)
+- Real client IP comes from `CLIENT_IP_HEADER` (Caddy → CF-Connecting-IP), so grants/checks key on the per-visitor IP, not a shared Cloudflare PoP (see `clientIP()` in [web/access.go](web/access.go))
+- Per-IP lockout after `MAX_LOGIN_FAILURES` failed unlocks: returns HTTP 429 with `Retry-After` for `LOCKOUT_MINUTES` (see [web/lockout.go](web/lockout.go)). This is the primary brute-force defense on the cloud path, where fail2ban can't see the gateway logs.
+- Failed unlock POSTs return HTTP 401 (distinguishable in access logs); the page still renders for the user
+- Rate limiting on /unlock (2 req/sec, burst 5)
 - Input validation for passwords (null bytes, UTF-8, length limits)
 - Failed login attempts are logged without storing attempted password values
+- Persist file is written atomically (temp file + rename, serialized behind `saveLock`) so a crash mid-write can't truncate it and drop every grant
 - ReadHeaderTimeout of 3 seconds on HTTP server
 - Local IP bypass requires explicit opt-in via environment variable
 
