@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -59,6 +60,13 @@ func TestUnlockCorrectPasswordGrantsHeaderIP(t *testing.T) {
 	if !strings.Contains(w.Header().Get("Set-Cookie"), "gateway_session=") {
 		t.Fatalf("expected a session cookie to be set, got %q", w.Header().Get("Set-Cookie"))
 	}
+
+	// The production path fires saveGranted in a goroutine. Give it a
+	// moment so the temp file write/rename completes before t.TempDir
+	// cleanup runs. Without this the RemoveAll can fail with "directory
+	// not empty" under load or slow CI filesystems (pre-existing timing
+	// sensitivity around async persist).
+	time.Sleep(20 * time.Millisecond)
 }
 
 func TestUnlockLocksOutAfterRepeatedFailures(t *testing.T) {
@@ -91,6 +99,9 @@ func TestUnlockLocksOutAfterRepeatedFailures(t *testing.T) {
 	if status, _ := postUnlock(&h, "203.0.113.8", testPassword); status != http.StatusOK {
 		t.Fatalf("expected a different IP to still unlock (200), got %d", status)
 	}
+
+	// Allow async saveGranted goroutine(s) to finish before TempDir cleanup.
+	time.Sleep(20 * time.Millisecond)
 }
 
 func TestUnlockSuccessClearsFailureCount(t *testing.T) {
@@ -110,4 +121,7 @@ func TestUnlockSuccessClearsFailureCount(t *testing.T) {
 	if locked, _ := h.isLockedOut(ip); locked {
 		t.Fatal("expected a successful unlock to reset the failure count")
 	}
+
+	// Allow async saveGranted goroutine(s) to finish before TempDir cleanup.
+	time.Sleep(20 * time.Millisecond)
 }
