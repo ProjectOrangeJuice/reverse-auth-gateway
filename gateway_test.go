@@ -24,6 +24,32 @@ func TestSafeGinLogFormatterDropsQuery(t *testing.T) {
 	}
 }
 
+func TestSafeGinLogFormatterUsesClientIPHeader(t *testing.T) {
+	// Simulate a request arriving from a Railway edge with the real client
+	// IP injected by Caddy via the custom header (the same mechanism used
+	// internally for grants and access checks).
+	req := httptest.NewRequest("GET", "/access", nil)
+	req.RemoteAddr = "79.127.178.82:54321" // the edge we do NOT want to log
+	req.Header.Set("X-Gateway-Client-IP", "203.0.113.77")
+
+	output := safeGinLogFormatter(gin.LogFormatterParams{
+		Request:  req,
+		Method:   req.Method,
+		Path:     req.URL.RequestURI(),
+		ClientIP: "79.127.178.82", // what Gin would normally compute
+	})
+
+	if !strings.Contains(output, "203.0.113.77") {
+		t.Fatalf("expected real client IP from header in log, got %q", output)
+	}
+	if strings.Contains(output, "79.127.178.82") {
+		t.Fatalf("did not expect edge IP to appear in log output, got %q", output)
+	}
+	if !strings.Contains(output, `"/access"`) {
+		t.Fatalf("expected path to remain in log output, got %q", output)
+	}
+}
+
 func TestGetTrustedProxiesAcceptsIPsAndCIDRs(t *testing.T) {
 	t.Setenv("TRUSTED_PROXIES", "10.0.0.1, 100.64.0.0/10, invalid")
 
