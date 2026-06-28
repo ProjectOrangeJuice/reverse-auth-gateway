@@ -27,11 +27,11 @@ func TestAccessPageSetsSessionCookieForAuthorizedIP(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	h := newTestHandlers()
-	h.granted = append(h.granted, &authed{
+	h.granted["203.0.113.10"] = &authed{
 		IP:         "203.0.113.10",
 		AuthedTime: time.Now(),
 		Session:    "session-token",
-	})
+	}
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -54,11 +54,11 @@ func TestAccessPageDoesNotSetSessionCookieForExistingValidSession(t *testing.T) 
 	gin.SetMode(gin.TestMode)
 
 	h := newTestHandlers()
-	h.granted = append(h.granted, &authed{
+	h.granted["203.0.113.10"] = &authed{
 		IP:         "203.0.113.10",
 		AuthedTime: time.Now(),
 		Session:    "session-token",
-	})
+	}
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -216,11 +216,11 @@ func TestAccessPagePrefersClientIPHeader(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	h := newTestHandlers()
-	h.granted = append(h.granted, &authed{
+	h.granted["203.0.113.50"] = &authed{
 		IP:         "203.0.113.50",
 		AuthedTime: time.Now(),
 		Session:    "session-token",
-	})
+	}
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -241,11 +241,11 @@ func TestAccessPageClientIPHeaderOverridesProxyAddr(t *testing.T) {
 	// Regression guard for the core bug: a stranger sharing the granted
 	// proxy/PoP address must NOT be authorized off that shared address.
 	h := newTestHandlers()
-	h.granted = append(h.granted, &authed{
+	h.granted["198.51.100.1"] = &authed{
 		IP:         "198.51.100.1",
 		AuthedTime: time.Now(),
 		Session:    "session-token",
-	})
+	}
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -275,6 +275,7 @@ func newTestHandlers() Handlers {
 		expirationDays:   30,
 		cookieName:       "gateway_session",
 		clientIPHeader:   "X-Gateway-Client-IP",
+		granted:          make(map[string]*authed),
 		loginAttempts:    make(map[string]*loginAttempt),
 		maxLoginFailures: 3,
 		lockoutDuration:  time.Minute,

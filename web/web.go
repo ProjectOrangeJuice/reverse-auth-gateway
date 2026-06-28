@@ -21,7 +21,7 @@ type Handlers struct {
 	unlockPasswd string
 
 	grantedLock    sync.Mutex // Not concerned for performance
-	granted        []*authed
+	granted        map[string]*authed
 	saveLock       sync.Mutex // serializes persist-file writes (atomic save)
 	persistFile    string
 	expirationDays int
@@ -123,6 +123,7 @@ func SetupHandlers() *Handlers {
 		cookieDomain:     cookieDomain,
 		cookieName:       cookieName,
 		clientIPHeader:   clientIPHeader,
+		granted:          make(map[string]*authed),
 		loginAttempts:    make(map[string]*loginAttempt),
 		maxLoginFailures: maxLoginFailures,
 		lockoutDuration:  time.Duration(lockoutMinutes) * time.Minute,
@@ -203,13 +204,13 @@ func (h *Handlers) loadGranted() {
 
 	now := time.Now()
 	expirationDuration := h.expirationDuration()
-	byIP := make(map[string]*authed, len(persisted))
 	loaded := make([]*authed, 0, len(persisted))
 	expiredCount := 0
 	duplicateCount := 0
 	repairedCount := 0
 	invalidCount := 0
 
+	h.grantedLock.Lock()
 	for _, p := range persisted {
 		if now.Sub(p.AuthedTime) > expirationDuration {
 			log.Printf("Skipping expired IP %s (authed %v)", p.IP, p.AuthedTime)
@@ -224,7 +225,7 @@ func (h *Handlers) loadGranted() {
 			continue
 		}
 
-		if existing := byIP[a.IP]; existing != nil {
+		if existing := h.granted[a.IP]; existing != nil {
 			mergeAuthRecords(existing, a)
 			duplicateCount++
 			continue
@@ -233,12 +234,9 @@ func (h *Handlers) loadGranted() {
 		if repaired {
 			repairedCount++
 		}
-		byIP[a.IP] = a
+		h.granted[a.IP] = a
 		loaded = append(loaded, a)
 	}
-
-	h.grantedLock.Lock()
-	h.granted = append(h.granted, loaded...)
 	h.grantedLock.Unlock()
 
 	for _, a := range loaded {
@@ -291,7 +289,7 @@ func (h *Handlers) saveGranted() {
 	}
 	h.grantedLock.Unlock()
 
-	data, err := json.MarshalIndent(persisted, "", "  ")
+	data, err := json.Marshal(persisted)
 	if err != nil {
 		log.Printf("Error marshaling granted IPs: %v", err)
 		return
@@ -365,11 +363,14 @@ func (h *Handlers) findGrantedBySession(session string) *authed {
 	}
 
 	h.grantedLock.Lock()
-	copiedGranted := make([]*authed, len(h.granted))
-	copy(copiedGranted, h.granted)
+	// Snapshot the values under lock (map iteration is safe to snapshot pointers)
+	copied := make([]*authed, 0, len(h.granted))
+	for _, a := range h.granted {
+		copied = append(copied, a)
+	}
 	h.grantedLock.Unlock()
 
-	for _, authRecord := range copiedGranted {
+	for _, authRecord := range copied {
 		authRecord.recordEditLock.Lock()
 		matches := subtle.ConstantTimeCompare([]byte(authRecord.Session), []byte(session)) == 1
 		authRecord.recordEditLock.Unlock()
@@ -387,42 +388,30 @@ func (h *Handlers) reuseGrantedIPLocked(ip string, now time.Time) *authed {
 		log.Printf("Cleaned auth list: removed %d expired and merged %d duplicate IP record(s)", removed, merged)
 	}
 
-	for _, record := range h.granted {
-		if record.IP == ip {
-			refreshAuthRecord(record, now)
-			return record
-		}
+	if record := h.granted[ip]; record != nil {
+		refreshAuthRecord(record, now)
+		return record
 	}
 
 	return nil
 }
 
 func (h *Handlers) compactGrantedLocked(now time.Time) (int, int) {
-	keptByIP := make(map[string]*authed, len(h.granted))
-	compacted := h.granted[:0]
 	removed := 0
 	merged := 0
 
-	for _, record := range h.granted {
+	for ip, record := range h.granted {
 		if h.recordExpiredAt(record, now) {
 			record.recordEditLock.Lock()
 			log.Printf("Removing expired IP %s (authed %v)", record.IP, record.AuthedTime)
 			record.recordEditLock.Unlock()
+			delete(h.granted, ip)
 			removed++
 			continue
 		}
-
-		if existing := keptByIP[record.IP]; existing != nil {
-			mergeAuthRecords(existing, record)
-			merged++
-			continue
-		}
-
-		keptByIP[record.IP] = record
-		compacted = append(compacted, record)
+		// No duplicate merging needed in map representation (keys unique by design)
 	}
 
-	h.granted = compacted
 	return removed, merged
 }
 

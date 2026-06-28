@@ -70,7 +70,7 @@ func (h *Handlers) addGranted(ip string) (*authed, error) {
 		h.grantedLock.Unlock()
 		return nil, err
 	}
-	h.granted = append(h.granted, record)
+	h.granted[ip] = record
 	h.grantedLock.Unlock()
 
 	log.Printf("Adding %v to allowed list", ip)

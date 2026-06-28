@@ -27,22 +27,19 @@ func (h *Handlers) AccessPage(g *gin.Context) {
 	}
 
 	h.grantedLock.Lock()
-	copiedGranted := make([]*authed, len(h.granted))
-	copy(copiedGranted, h.granted)
+	authRecord := h.granted[connectorIP]
 	h.grantedLock.Unlock()
 
-	for _, authRecord := range copiedGranted {
-		if authRecord.IP == connectorIP {
-			// Check if IP has expired
-			if h.isExpired(authRecord) {
-				log.Printf("IP %s has expired (authed %v)", connectorIP, authRecord.AuthedTime)
-				g.Status(http.StatusUnauthorized)
-				return
-			}
-			h.setSessionCookie(g, authRecord)
-			g.Status(http.StatusOK)
+	if authRecord != nil {
+		// Check if IP has expired
+		if h.isExpired(authRecord) {
+			log.Printf("IP %s has expired (authed %v)", connectorIP, authRecord.AuthedTime)
+			g.Status(http.StatusUnauthorized)
 			return
 		}
+		h.setSessionCookie(g, authRecord)
+		g.Status(http.StatusOK)
+		return
 	}
 
 	local, record := h.checkLocalIP(connectorIP)

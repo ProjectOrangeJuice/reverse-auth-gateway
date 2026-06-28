@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"gateway/web"
 	"log"
 	"net"
@@ -92,24 +91,10 @@ func configureGinMode() {
 
 func newRouter() *gin.Engine {
 	router := gin.New()
-	router.Use(gin.LoggerWithFormatter(safeGinLogFormatter), gin.Recovery())
+	// Logger removed to reduce per-request allocations and log volume.
+	// Key events (grants, rejects, expirations) are still logged explicitly.
+	router.Use(gin.Recovery())
 	return router
-}
-
-func safeGinLogFormatter(param gin.LogFormatterParams) string {
-	path := "/"
-	if param.Request != nil && param.Request.URL != nil && param.Request.URL.EscapedPath() != "" {
-		path = param.Request.URL.EscapedPath()
-	}
-
-	return fmt.Sprintf("[GIN] %v | %3d | %13v | %15s | %-7s %q\n",
-		param.TimeStamp.Format("2006/01/02 - 15:04:05"),
-		param.StatusCode,
-		param.Latency,
-		param.ClientIP,
-		param.Method,
-		path,
-	)
 }
 
 func getTrustedProxies() []string {
