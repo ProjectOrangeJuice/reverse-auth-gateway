@@ -97,6 +97,41 @@ func newRouter() *gin.Engine {
 	return router
 }
 
+<<<<<<< HEAD
+=======
+func safeGinLogFormatter(param gin.LogFormatterParams) string {
+	path := "/"
+	if param.Request != nil && param.Request.URL != nil && param.Request.URL.EscapedPath() != "" {
+		path = param.Request.URL.EscapedPath()
+	}
+
+	// Prefer the real client IP (from CLIENT_IP_HEADER) so logs show the
+	// per-visitor address rather than a Railway edge / proxy. Falls back to
+	// Gin's computed ClientIP (which may be the direct peer when the header
+	// is absent or invalid). The same preference+validation logic lives in
+	// web.RealClientIP and is used by the unlock/access handlers.
+	clientIP := param.ClientIP
+	if param.Request != nil {
+		hdr := os.Getenv("CLIENT_IP_HEADER")
+		if hdr == "" {
+			hdr = "X-Gateway-Client-IP"
+		}
+		if real := web.RealClientIP(param.Request, hdr); real != "" {
+			clientIP = real
+		}
+	}
+
+	return fmt.Sprintf("[GIN] %v | %3d | %13v | %15s | %-7s %q\n",
+		param.TimeStamp.Format("2006/01/02 - 15:04:05"),
+		param.StatusCode,
+		param.Latency,
+		clientIP,
+		param.Method,
+		path,
+	)
+}
+
+>>>>>>> 29f6b3d5b24ec1c85ce479fbf39702f7857f27f6
 func getTrustedProxies() []string {
 	proxies := os.Getenv("TRUSTED_PROXIES")
 	if proxies == "" {

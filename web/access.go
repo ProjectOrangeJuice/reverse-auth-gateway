@@ -91,19 +91,35 @@ func (h *Handlers) setSessionCookie(g *gin.Context, authRecord *authed) {
 	g.SetCookie(h.cookieName, authRecord.Session, h.cookieMaxAgeSeconds(), "/", h.cookieDomain, true, true)
 }
 
+// RealClientIP returns the per-visitor client IP from the given header name
+// when the header is present and contains a syntactically valid IP address.
+// Returns "" otherwise so the caller can fall back (e.g. to gin's ClientIP()).
+// This is the shared implementation used both by auth logic and by the
+// Gin access log formatter so that logs show the real IP (not a Railway edge).
+func RealClientIP(r *http.Request, headerName string) string {
+	if r == nil || headerName == "" {
+		return ""
+	}
+	if v := strings.TrimSpace(r.Header.Get(headerName)); v != "" {
+		if net.ParseIP(v) != nil {
+			return v
+		}
+	}
+	return ""
+}
+
 // clientIP returns the real per-visitor IP. Behind Cloudflare + Railway, gin's
-// ClientIP() resolves to a shared Cloudflare PoP address, so the fronting Caddy
-// injects the resolved client IP via clientIPHeader (default
-// X-Gateway-Client-IP) and overwrites it on every request. We trust that header
-// because the gateway is only reachable from Caddy over the internal network.
-// Falls back to gin's ClientIP() for local/dev, or if the header is missing or
-// malformed.
+// ClientIP() resolves to a shared Cloudflare PoP address or Railway edge IP, so
+// the fronting Caddy injects the resolved client IP via clientIPHeader (default
+// X-Gateway-Client-IP). We trust that header because the gateway is only
+// reachable from Caddy over the internal network. Falls back to gin's ClientIP()
+// for local/dev, or if the header is missing or malformed.
 func (h *Handlers) clientIP(g *gin.Context) string {
+	if ip := RealClientIP(g.Request, h.clientIPHeader); ip != "" {
+		return ip
+	}
 	if h.clientIPHeader != "" {
 		if v := strings.TrimSpace(g.GetHeader(h.clientIPHeader)); v != "" {
-			if net.ParseIP(v) != nil {
-				return v
-			}
 			log.Printf("Ignoring invalid %s header %q from %v", h.clientIPHeader, v, g.ClientIP())
 		}
 	}
