@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"gateway/web"
 	"log"
 	"net"
@@ -97,8 +98,6 @@ func newRouter() *gin.Engine {
 	return router
 }
 
-<<<<<<< HEAD
-=======
 func safeGinLogFormatter(param gin.LogFormatterParams) string {
 	path := "/"
 	if param.Request != nil && param.Request.URL != nil && param.Request.URL.EscapedPath() != "" {
@@ -131,7 +130,6 @@ func safeGinLogFormatter(param gin.LogFormatterParams) string {
 	)
 }
 
->>>>>>> 29f6b3d5b24ec1c85ce479fbf39702f7857f27f6
 func getTrustedProxies() []string {
 	proxies := os.Getenv("TRUSTED_PROXIES")
 	if proxies == "" {

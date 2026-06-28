@@ -1,11 +1,13 @@
 package main
 
 import (
+	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
-<<<<<<< HEAD
-=======
 func TestSafeGinLogFormatterDropsQuery(t *testing.T) {
 	request := httptest.NewRequest("GET", "/access?access_token=secret-token", nil)
 	output := safeGinLogFormatter(gin.LogFormatterParams{
@@ -48,7 +50,6 @@ func TestSafeGinLogFormatterUsesClientIPHeader(t *testing.T) {
 	}
 }
 
->>>>>>> 29f6b3d5b24ec1c85ce479fbf39702f7857f27f6
 func TestGetTrustedProxiesAcceptsIPsAndCIDRs(t *testing.T) {
 	t.Setenv("TRUSTED_PROXIES", "10.0.0.1, 100.64.0.0/10, invalid")
 
