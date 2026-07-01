@@ -42,6 +42,7 @@ func (h *Handlers) UnlockPage(g *gin.Context) {
 		} else {
 			h.registerFailedLogin(ip)
 			log.Printf("Failed login from %v", ip)
+			go h.notify(ip, false)
 			// Return 401 (not 200) so a failed unlock is distinguishable in
 			// access logs; the page still renders below for the user.
 			g.Status(http.StatusUnauthorized)
@@ -76,7 +77,7 @@ func (h *Handlers) addGranted(ip string) (*authed, error) {
 	log.Printf("Adding %v to allowed list", ip)
 
 	go h.saveGranted()
-	go h.sendUnlockNotification(ip)
+	go h.notify(ip, true)
 
 	return record, nil
 }

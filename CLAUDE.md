@@ -40,6 +40,7 @@ The server listens on port 9090.
 - `MAX_LOGIN_FAILURES` (optional): Failed unlock attempts from one IP before it is locked out (default: 5)
 - `LOCKOUT_MINUTES` (optional): How long a locked-out IP stays locked, returning HTTP 429 (default: 15)
 - `PERSIST_FILE` (optional): Path to file for persisting authorized IPs (default: "granted_ips.json")
+- `SLACK_WEBHOOK_URL` (optional): Slack Incoming Webhook URL. If set, notifications are sent for both successful unlocks ("203.0.113.42 unlocked") and incorrect password ("203.0.113.42 incorrect password").
 
 ## Architecture
 

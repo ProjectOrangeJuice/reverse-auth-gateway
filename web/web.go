@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"html/template"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -34,11 +36,7 @@ type Handlers struct {
 	maxLoginFailures int
 	lockoutDuration  time.Duration
 
-	notifyEmail string
-	smtpHost    string
-	smtpPort    string
-	smtpUser    string
-	smtpPass    string
+	slackWebhook string // optional Incoming Webhook URL (from SLACK_WEBHOOK_URL; "" = silent no-op)
 }
 
 type authed struct {
@@ -106,14 +104,7 @@ func SetupHandlers() *Handlers {
 		}
 	}
 
-	smtpHost := os.Getenv("SMTP_HOST")
-	smtpPort := os.Getenv("SMTP_PORT")
-	if smtpPort == "" {
-		smtpPort = "587"
-	}
-	smtpUser := os.Getenv("SMTP_USER")
-	smtpPass := os.Getenv("SMTP_PASS")
-	notifyEmail := os.Getenv("NOTIFY_EMAIL")
+	slackWebhook := os.Getenv("SLACK_WEBHOOK_URL")
 
 	h := Handlers{
 		Templates:        templates,
@@ -127,11 +118,7 @@ func SetupHandlers() *Handlers {
 		loginAttempts:    make(map[string]*loginAttempt),
 		maxLoginFailures: maxLoginFailures,
 		lockoutDuration:  time.Duration(lockoutMinutes) * time.Minute,
-		notifyEmail:      notifyEmail,
-		smtpHost:         smtpHost,
-		smtpPort:         smtpPort,
-		smtpUser:         smtpUser,
-		smtpPass:         smtpPass,
+		slackWebhook:     slackWebhook,
 	}
 
 	// Load persisted IPs on startup
@@ -453,5 +440,36 @@ func snapshotPersisted(record *authed) persistedAuthed {
 		IP:         record.IP,
 		AuthedTime: record.AuthedTime,
 		Session:    record.Session,
+	}
+}
+
+// notify sends a Slack notification (if configured) for successful unlock or incorrect password attempt.
+func (h *Handlers) notify(ip string, unlocked bool) {
+	if h.slackWebhook == "" {
+		return
+	}
+
+	text := ip + " incorrect password"
+	if unlocked {
+		text = ip + " unlocked"
+	}
+
+	payload := map[string]string{"text": text}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("Failed to marshal Slack payload: %v", err)
+		return
+	}
+
+	// Per-call *http.Client (with timeout) inside goroutine for minimal diff and
+	// to avoid introducing shared mutable state in Handlers.
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(h.slackWebhook, "application/json", bytes.NewReader(data))
+	if resp != nil {
+		resp.Body.Close()
+	}
+	if err != nil {
+		log.Printf("Failed to send Slack notification: %v", err)
+		return
 	}
 }
