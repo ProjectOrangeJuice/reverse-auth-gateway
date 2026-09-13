@@ -125,3 +125,23 @@ func TestUnlockSuccessClearsFailureCount(t *testing.T) {
 	// Allow async saveGranted goroutine(s) to finish before TempDir cleanup.
 	time.Sleep(20 * time.Millisecond)
 }
+
+func TestUnlockOversizedBodyReturns413(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := newTestHandlers()
+	h.unlockPasswd = testPassword
+	h.persistFile = filepath.Join(t.TempDir(), "granted.json")
+
+	body := "pass=" + strings.Repeat("a", unlockBodyLimit+1024)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/unlock", strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	c.Request.Header.Set("X-Gateway-Client-IP", "203.0.113.7")
+	h.UnlockPage(c)
+
+	if c.Writer.Status() != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d", c.Writer.Status())
+	}
+}

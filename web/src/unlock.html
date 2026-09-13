@@ -1,9 +1,11 @@
 {{define "unlock"}}
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Unlock gateway</title>
   <link rel="stylesheet" href="css/style.css" />
 </head>
 
@@ -16,13 +18,13 @@
         <section class="container">
           <h1>Unlock gateway</h1>
           <p>! Only authorized access allowed !</p>
-          <form method="POST">
+          <form method="POST" autocomplete="off">
             <div class="form-group">
               <h1>Unlock gateway</h1>
 
               <div class="nes-field">
                 <label for="psw"><b>Password</b></label>
-                <input type="password" name="pass" class="link-guidelines" required>
+                <input type="password" name="pass" id="psw" class="link-guidelines" autocomplete="current-password" required>
               </div>
               <button type="submit" class="btn-secondary">Unlock</button>
             </div>

@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -37,7 +39,18 @@ type Handlers struct {
 	lockoutDuration  time.Duration
 
 	slackWebhook string // optional Incoming Webhook URL (from SLACK_WEBHOOK_URL; "" = silent no-op)
+	httpClient   *http.Client
 }
+
+const (
+	minPasswordWarnLen = 16
+	unlockBodyLimit    = 8 << 10 // 8KiB: password form, nothing else
+)
+
+var (
+	errMissingPassword = errors.New("GATEWAY_PASSWORD is required")
+	errMissingIP       = errors.New("missing IP")
+)
 
 type authed struct {
 	IP         string    `json:"ip"`
@@ -53,8 +66,6 @@ type persistedAuthed struct {
 	Session    string    `json:"session"`
 }
 
-var errMissingIP = errors.New("missing IP")
-
 func SetupHandlers() *Handlers {
 	templates, err := template.ParseGlob("web/src/*.html")
 	if err != nil {
@@ -62,7 +73,11 @@ func SetupHandlers() *Handlers {
 		return &Handlers{}
 	}
 
-	unlockPasswd := os.Getenv("GATEWAY_PASSWORD")
+	unlockPasswd, err := passwordFromEnv(os.Getenv("GATEWAY_PASSWORD"))
+	if err != nil {
+		log.Fatalf("%s", err)
+	}
+
 	persistFile := os.Getenv("PERSIST_FILE")
 	if persistFile == "" {
 		persistFile = "granted_ips.json"
@@ -104,7 +119,7 @@ func SetupHandlers() *Handlers {
 		}
 	}
 
-	slackWebhook := os.Getenv("SLACK_WEBHOOK_URL")
+	slackWebhook := slackWebhookFromEnv(os.Getenv("SLACK_WEBHOOK_URL"))
 
 	h := Handlers{
 		Templates:        templates,
@@ -119,6 +134,7 @@ func SetupHandlers() *Handlers {
 		maxLoginFailures: maxLoginFailures,
 		lockoutDuration:  time.Duration(lockoutMinutes) * time.Minute,
 		slackWebhook:     slackWebhook,
+		httpClient:       &http.Client{Timeout: 5 * time.Second},
 	}
 
 	// Load persisted IPs on startup
@@ -156,6 +172,47 @@ func validatePassword(password string) (string, bool) {
 	}
 
 	return password, true
+}
+
+func passwordFromEnv(raw string) (string, error) {
+	password := strings.TrimSpace(raw)
+	if password == "" {
+		return "", errMissingPassword
+	}
+	if len(password) < minPasswordWarnLen {
+		log.Printf("GATEWAY_PASSWORD is shorter than %d characters; use a high-entropy secret", minPasswordWarnLen)
+	}
+	return password, nil
+}
+
+func slackWebhookFromEnv(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		log.Printf("Ignoring invalid SLACK_WEBHOOK_URL")
+		return ""
+	}
+	if u.Scheme != "https" {
+		log.Printf("Ignoring SLACK_WEBHOOK_URL: only https webhooks are allowed")
+		return ""
+	}
+	return raw
+}
+
+func passwordMatches(provided, expected string) bool {
+	// Hash both sides so ConstantTimeCompare does not short-circuit on length.
+	sumProvided := sha256.Sum256([]byte(provided))
+	sumExpected := sha256.Sum256([]byte(expected))
+	return subtle.ConstantTimeCompare(sumProvided[:], sumExpected[:]) == 1
+}
+
+// ClientIPHeaderName is the request header the fronting proxy uses to pass the
+// real visitor IP (default X-Gateway-Client-IP).
+func (h *Handlers) ClientIPHeaderName() string {
+	return h.clientIPHeader
 }
 
 func newAuthed(ip string, authedAt time.Time) (*authed, error) {
@@ -461,9 +518,10 @@ func (h *Handlers) notify(ip string, unlocked bool) {
 		return
 	}
 
-	// Per-call *http.Client (with timeout) inside goroutine for minimal diff and
-	// to avoid introducing shared mutable state in Handlers.
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := h.httpClient
+	if client == nil {
+		client = &http.Client{Timeout: 5 * time.Second}
+	}
 	resp, err := client.Post(h.slackWebhook, "application/json", bytes.NewReader(data))
 	if resp != nil {
 		resp.Body.Close()

@@ -269,6 +269,90 @@ func findTestGrant(h *Handlers, ip string) *authed {
 	return nil
 }
 
+func TestCheckLocalIPRequiresOptInAndParsesIPv4(t *testing.T) {
+	h := newTestHandlers()
+	h.persistFile = filepath.Join(t.TempDir(), "granted.json")
+
+	ok, _ := h.checkLocalIP("192.168.1.10")
+	if ok {
+		t.Fatal("expected bypass off by default")
+	}
+
+	t.Setenv("ALLOW_LOCAL_BYPASS", "true")
+
+	ok, record := h.checkLocalIP("192.168.1.10")
+	if !ok || record == nil {
+		t.Fatal("expected 192.168.1.10 to bypass when enabled")
+	}
+
+	ok, _ = h.checkLocalIP("192.168.30.1")
+	if ok {
+		t.Fatal("192.168.30.x is outside the documented LAN range")
+	}
+	ok, _ = h.checkLocalIP("10.0.0.1")
+	if ok {
+		t.Fatal("10/8 must not bypass")
+	}
+	ok, _ = h.checkLocalIP("not-an-ip")
+	if ok {
+		t.Fatal("garbage must not bypass")
+	}
+	ok, _ = h.checkLocalIP("192.168.1.1.1")
+	if ok {
+		t.Fatal("extra octets must not bypass")
+	}
+	ok, _ = h.checkLocalIP("192.168.029.1")
+	if ok {
+		t.Fatal("leading-zero IPv4 must not bypass")
+	}
+
+	time.Sleep(20 * time.Millisecond)
+}
+
+func TestPasswordFromEnv(t *testing.T) {
+	if _, err := passwordFromEnv(""); err == nil {
+		t.Fatal("expected error for empty password")
+	}
+	if _, err := passwordFromEnv("   "); err == nil {
+		t.Fatal("expected error for whitespace password")
+	}
+	got, err := passwordFromEnv("  high-entropy-secret  ")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "high-entropy-secret" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSlackWebhookFromEnv(t *testing.T) {
+	if got := slackWebhookFromEnv(""); got != "" {
+		t.Fatalf("empty should stay empty, got %q", got)
+	}
+	if got := slackWebhookFromEnv("http://hooks.example/slack"); got != "" {
+		t.Fatalf("http webhook should be rejected, got %q", got)
+	}
+	if got := slackWebhookFromEnv("not a url"); got != "" {
+		t.Fatalf("garbage should be rejected, got %q", got)
+	}
+	want := "https://hooks.slack.com/services/T000/B000/xxx"
+	if got := slackWebhookFromEnv(want); got != want {
+		t.Fatalf("https webhook should be kept, got %q", got)
+	}
+}
+
+func TestPasswordMatchesIsLengthIndependent(t *testing.T) {
+	if passwordMatches("secret", "secret") != true {
+		t.Fatal("expected match")
+	}
+	if passwordMatches("secret", "secrets") {
+		t.Fatal("different lengths must not match")
+	}
+	if passwordMatches("", "x") {
+		t.Fatal("empty vs non-empty must not match")
+	}
+}
+
 func newTestHandlers() Handlers {
 	return Handlers{
 		Templates:        template.Must(template.New("unlock").Parse("unlock")),

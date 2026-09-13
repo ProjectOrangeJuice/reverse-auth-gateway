@@ -4,8 +4,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -59,19 +59,22 @@ func (h *Handlers) checkLocalIP(ip string) (bool, *authed) {
 		return false, nil
 	}
 
-	ipSplit := strings.Split(ip, ".")
-	if len(ipSplit) != 4 {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
 		return false, nil
 	}
-	localDigit, err := strconv.Atoi(ipSplit[2])
-	if err != nil {
-		log.Printf("could not read digit, %v", err)
+	if addr.Is4In6() {
+		addr = addr.Unmap()
+	}
+	if !addr.Is4() {
 		return false, nil
 	}
 
-	if ipSplit[0] == "192" && ipSplit[1] == "168" && localDigit < 30 {
+	octets := addr.As4()
+	// 192.168.0.0–192.168.29.255 — the on-prem LAN ranges this homelab uses.
+	if octets[0] == 192 && octets[1] == 168 && octets[2] < 30 {
 		log.Printf("Local IP bypass enabled: adding %s to allowed list", ip)
-		record, err := h.addGranted(ip)
+		record, err := h.addGranted(addr.String())
 		if err != nil {
 			log.Printf("could not create local bypass auth for %s: %v", ip, err)
 			return false, nil
@@ -87,8 +90,9 @@ func (h *Handlers) clearSessionCookie(g *gin.Context) {
 }
 
 func (h *Handlers) setSessionCookie(g *gin.Context, authRecord *authed) {
+	session := snapshotPersisted(authRecord).Session
 	g.SetSameSite(http.SameSiteLaxMode)
-	g.SetCookie(h.cookieName, authRecord.Session, h.cookieMaxAgeSeconds(), "/", h.cookieDomain, true, true)
+	g.SetCookie(h.cookieName, session, h.cookieMaxAgeSeconds(), "/", h.cookieDomain, true, true)
 }
 
 // RealClientIP returns the per-visitor client IP from the given header name
