@@ -1,2 +1,4 @@
 gateway
 gatewayDocker
+granted_ips.json
+granted_ips.json.tmp

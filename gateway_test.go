@@ -1,10 +1,14 @@
 package main
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/didip/tollbooth/v7"
+	"github.com/didip/tollbooth/v7/limiter"
 	"github.com/gin-gonic/gin"
 )
 
@@ -71,5 +75,99 @@ func TestGetTrustedProxiesDefaultsToPrivateRanges(t *testing.T) {
 	}
 	if proxies[0] != "10.0.0.0/8" {
 		t.Fatalf("unexpected first default proxy range: %#v", proxies)
+	}
+}
+
+func TestListenAddrDefaultAndValidation(t *testing.T) {
+	t.Setenv("PORT", "")
+	addr, err := listenAddr()
+	if err != nil {
+		t.Fatalf("default port: %v", err)
+	}
+	if addr != ":9090" {
+		t.Fatalf("expected :9090, got %q", addr)
+	}
+
+	t.Setenv("PORT", "8080")
+	addr, err = listenAddr()
+	if err != nil {
+		t.Fatalf("valid port: %v", err)
+	}
+	if addr != ":8080" {
+		t.Fatalf("expected :8080, got %q", addr)
+	}
+
+	for _, bad := range []string{"0", "-1", "65536", "abc", "80abc"} {
+		t.Setenv("PORT", bad)
+		if _, err := listenAddr(); err == nil {
+			t.Fatalf("expected error for PORT=%q", bad)
+		}
+	}
+}
+
+func TestHealthHandlerOK(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/health", nil)
+	healthHandler(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(securityHeaders)
+	router.GET("/x", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+
+	if w.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("missing nosniff, headers=%v", w.Header())
+	}
+	if w.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("missing frame deny")
+	}
+	if !strings.Contains(w.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'") {
+		t.Fatalf("expected frame-ancestors in CSP, got %q", w.Header().Get("Content-Security-Policy"))
+	}
+	if w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("expected Cache-Control no-store")
+	}
+}
+
+func TestLimitByClientIPKeysOnHeaderNotRemoteAddr(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	lmt := tollbooth.NewLimiter(1, &limiter.ExpirableOptions{DefaultExpirationTTL: time.Hour})
+	lmt.SetBurst(1)
+
+	router := gin.New()
+	router.GET("/unlock", limitByClientIP(lmt, "X-Gateway-Client-IP"), func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	hit := func(remote, header string) int {
+		req := httptest.NewRequest(http.MethodGet, "/unlock", nil)
+		req.RemoteAddr = remote
+		if header != "" {
+			req.Header.Set("X-Gateway-Client-IP", header)
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	if code := hit("10.0.0.1:12345", "203.0.113.10"); code != http.StatusOK {
+		t.Fatalf("first visitor: expected 200, got %d", code)
+	}
+	if code := hit("10.0.0.1:12345", "203.0.113.10"); code != http.StatusTooManyRequests {
+		t.Fatalf("same visitor: expected 429, got %d", code)
+	}
+	if code := hit("10.0.0.1:12345", "203.0.113.99"); code != http.StatusOK {
+		t.Fatalf("different visitor sharing proxy hop: expected 200, got %d", code)
 	}
 }

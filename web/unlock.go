@@ -1,7 +1,7 @@
 package web
 
 import (
-	"crypto/subtle"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -21,16 +21,26 @@ func (h *Handlers) UnlockPage(g *gin.Context) {
 			return
 		}
 
-		rawPassword := g.Request.FormValue("pass")
+		g.Request.Body = http.MaxBytesReader(g.Writer, g.Request.Body, unlockBodyLimit)
+		if err := g.Request.ParseForm(); err != nil {
+			log.Printf("Rejecting malformed unlock POST from %v: %v", ip, err)
+			var maxBytesError *http.MaxBytesError
+			if errors.As(err, &maxBytesError) {
+				g.Status(http.StatusRequestEntityTooLarge)
+				return
+			}
+			g.Status(http.StatusBadRequest)
+			return
+		}
 
-		password, valid := validatePassword(rawPassword)
+		password, valid := validatePassword(g.Request.FormValue("pass"))
 		if !valid {
 			log.Printf("Invalid password format from %v", ip)
 			g.Status(http.StatusBadRequest)
 			return
 		}
 
-		if subtle.ConstantTimeCompare([]byte(password), []byte(h.unlockPasswd)) == 1 {
+		if passwordMatches(password, h.unlockPasswd) {
 			record, err := h.addGranted(ip)
 			if err != nil {
 				log.Printf("Failed to create auth session for %v: %v", ip, err)

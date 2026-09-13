@@ -30,7 +30,7 @@ The server listens on port 9090.
 
 ## Environment Variables
 
-- `GATEWAY_PASSWORD` (required): Password for the `/unlock` endpoint
+- `GATEWAY_PASSWORD` (required): Password for the `/unlock` endpoint. The process refuses to start if this is unset or empty.
 - `COOKIE_DOMAIN` (optional): Domain attribute for the session cookie. **Set this to the parent domain (e.g. `harriso.co.uk`) for multi-subdomain deployments** so one unlock covers `bit.`/`home.`/`unlock.` and, crucially, survives client IP changes (mobile, VPN, iCloud Private Relay — which rotate the source IP per connection). Unset = a host-only cookie scoped to the unlock subdomain, which will NOT be sent to the protected services, leaving them dependent on the IP allowlist alone.
 - `COOKIE_NAME` (optional): Session cookie name (default: "gateway_session")
 - `CLIENT_IP_HEADER` (optional): Header the fronting proxy uses to pass the real client IP (default: "X-Gateway-Client-IP"). The gateway trusts this because it is only reachable from Caddy over the internal network, and Caddy overwrites it per request from Cloudflare's `CF-Connecting-IP`. Falls back to the connecting IP if unset/missing/malformed. This is what makes IP whitelisting key on the per-visitor IP rather than a shared Cloudflare PoP.
@@ -45,17 +45,18 @@ The server listens on port 9090.
 ## Architecture
 
 ### Main Entry Point
-[gateway.go](gateway.go) - Sets up Gin router, configures rate limiting (5 req/sec with burst of 5), and defines routes:
-- `POST /unlock` - Password authentication with rate limiting
-- `GET /unlock` - Unlock page (no rate limit)
-- `GET /access` - Authorization check endpoint (called by nginx auth_request)
+[gateway.go](gateway.go) - Sets up Gin router, configures rate limiting, and defines routes:
+- `GET /health` - Liveness probe (no auth, no rate limit)
+- `POST /unlock` - Password authentication with rate limiting (2 req/sec, burst 5, keyed on real client IP)
+- `GET /unlock` - Unlock page (same rate limit as POST)
+- `GET /access` - Authorization check endpoint (called by nginx/Caddy auth_request)
 - `/css/*` - Static CSS files
 
 ### Web Package Structure
 All HTTP handlers and core logic are in the [web/](web/) package:
 
 **[web/web.go](web/web.go)** - Core types and initialization:
-- `Handlers` struct holds templates, password, authorized IPs (`granted` slice), and persistence config
+- `Handlers` struct holds templates, password, authorized IPs (`granted` map keyed by IP), and persistence config
 - `authed` struct tracks the minimum auth state: IP, auth time, and session token
 - Input validation functions check passwords for null bytes, valid UTF-8, and length limits
 - `SetupHandlers()` loads HTML templates, restores persisted IPs, and starts expiration cleanup
@@ -73,10 +74,10 @@ All HTTP handlers and core logic are in the [web/](web/) package:
 **[web/access.go](web/access.go)** - Authorization logic:
 - Checks if client IP is in `granted` slice and verifies it hasn't expired
 - Returns HTTP 401 if IP is found but has exceeded expiration duration
-- Falls back to local IP bypass if `ALLOW_LOCAL_BYPASS=true` and IP matches 192.168.0-29.x
+- Falls back to local IP bypass if `ALLOW_LOCAL_BYPASS=true` and the parsed IPv4 address is in 192.168.0.0–192.168.29.255
 
 ### Concurrency Patterns
-- `grantedLock` (mutex) protects the `granted` slice
+- `grantedLock` (mutex) protects the `granted` map
 - Each `authed` record has `recordEditLock` (mutex) protecting its auth timestamp and session token
 
 ### Security Features
